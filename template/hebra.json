@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "plantilla",
+  "name": "Plantilla",
+  "version": "0.1.0",
+  "apiVersion": "^1.0.0",
+  "description": "Plugin mínimo de ejemplo: un comando, una vista, una pieza de la barra de estado y una extensión de editor.",
+  "author": "fodaveg",
+  "repo": "fodaveg/hebra-plugin-plantilla",
+  "platforms": ["macos", "ios", "linux", "windows", "web"],
+  "main": "hebra-main.mjs",
+  "icon": "puzzle",
+  "capabilities": {
+    "required": ["editor"],
+    "optional": ["vault.read"]
+  },
+  "network": { "hosts": [] },
+  "shared": { "@codemirror/state": "^6.5.0", "@codemirror/view": "^6.30.0" },
+  "files": {
+    "hebra-main.mjs": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "ageRating": "4+"
+}
