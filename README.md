@@ -47,7 +47,7 @@ await build({
 
 ## Capacidades y errores
 
-`ui`, `env`, `storage`, `markdown` y `workspace` están siempre. Un `hebra.json` que declare `workspace` sigue siendo válido: Hebra lo acepta y lo ignora. El resto (`vault.read`, `vault.write`, `editor`, `http`, `secrets`, `tcp`, `notify.system`, `background`) se declara en `hebra.json`; sin declarar, cada método rechaza con `capability-not-declared`. Una capacidad declarada que la plataforma no tiene (TCP en iPhone) rechaza con `unavailable-on-platform`. `api.has(capacidad)` dice si se puede usar aquí. En la versión 1.0.0 de Hebra, `secrets` rechaza con `capability-not-available` y `http` solo llega a los hosts que Hebra ya permite en Rust (y en la web todavía no existe).
+`ui`, `env`, `storage`, `markdown` y `workspace` están siempre. Un `hebra.json` que declare `workspace` sigue siendo válido: Hebra lo acepta y lo ignora. El resto (`vault.read`, `vault.write`, `editor`, `http`, `secrets`, `tcp`, `notify.system`, `background`) se declara en `hebra.json`; sin declarar, cada método rechaza con `capability-not-declared`. Una capacidad declarada que la plataforma no tiene (TCP en iPhone) rechaza con `unavailable-on-platform`. `api.has(capacidad)` dice si se puede usar aquí. `secrets` guarda en el llavero del dispositivo en las apps (solo en memoria en la web; no existe en Android). `http` solo habla `https:` con los hosts de `network.hosts` y los que el usuario permite con `requestUserHost`; Hebra los vuelve a comprobar en Rust contra el `hebra.json` instalado y rechaza cualquier dirección privada o local tras resolver DNS (en la web todavía no existe).
 
 Los errores se reconocen con `isPluginApiError(error, 'host-not-declared')`, nunca con `instanceof`.
 
@@ -70,6 +70,24 @@ La primera vez Hebra pregunta al usuario («Permitir» / «No permitir»); el s�
 ## Entorno
 
 `api.env.platform` dice qué build de Hebra corre (`'ios'` en la app de iPhone y iPad, `'web'` en el navegador). `api.env.appleMobile()` dice si el dispositivo es un iPhone o un iPad, también en la web. `api.env.isoDates()` y `api.env.onIsoDatesChange(listener)` leen el ajuste «Usar fechas ISO 8601» de Hebra. `api.vault.rootFolderId()` es el id de la carpeta raíz.
+
+## Novedades de la 1.1
+
+Solo se añade; un plugin con `"apiVersion": "^1.0.0"` sigue cargando.
+
+- `PluginNoteSummary.revision` y `PluginNoteSummary.bodySha256`: la revisión y el SHA-256 del cuerpo que Hebra ya guarda con la nota, sin leer el cuerpo. `revision` es `null` si el motor no informa de ella.
+- `api.env.hostVersion`: la versión de la app de Hebra (p. ej. `'0.1.0'`). No es `api.apiVersion`; para saber si una función existe, `api.has()` y `apiVersion`.
+- `api.ui.pickFolder()` resuelve con el id de la carpeta (no la ruta); `null` si se cancela o se elige la raíz.
+- `api.storage.indexedDbName()` de `tyrian-companion` conoce 11 nombres más (`tyrian-companion-<nombre>`).
+- `api.http.requestUserHost(url, { reason })`: `reason` sale en el diálogo de permiso. No hace falta una petición después, así que se puede pedir el permiso al guardar un ajuste y no en la primera entrega:
+
+```ts
+const ok = await api.http.requestUserHost(settings.webhookUrl, {
+  reason: 'Para enviar el aviso de cada entrega a tu webhook.'
+});
+```
+
+- Host falso: `noteSummary`, `hostVersion` (opción) y `recorded.userHostReasons`.
 
 ## Host falso
 

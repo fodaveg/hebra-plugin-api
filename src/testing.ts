@@ -2,7 +2,7 @@
  * Host FALSO de la API (`docs/SPEC-PLUGINS-EXTERNOS.md` §5.4): un `HebraPluginApi` en
  * memoria para probar un plugin sin Hebra. Cumple el mismo tipo que la fachada real y
  * niega las capacidades igual que ella (`capability-not-declared`,
- * `unavailable-on-platform`, `capability-not-available` para `secrets`), pero no es Hebra:
+ * `unavailable-on-platform`), pero no es Hebra:
  * la biblioteca es un `Map`, `http` responde lo que diga `options.http` y lo nativo no
  * hace nada. Lo registrado queda a la vista en `fake.recorded` para afirmar sobre ello.
  *
@@ -68,7 +68,7 @@ export interface FakePluginApiOptions {
   userHosts?: boolean;
   /** Lo que «contesta el usuario» al diálogo de `requestUserHost` (por defecto, «No
    *  permitir», como cerrar el diálogo). */
-  confirmUserHost?(host: string): boolean | Promise<boolean>;
+  confirmUserHost?(host: string, reason?: string): boolean | Promise<boolean>;
   /** Respuesta de `http.request` (por defecto, 200 vacío). */
   http?(request: PluginHttpRequest): Promise<PluginHttpResponse>;
   /** Notas iniciales por id, en la carpeta raíz `root`. */
@@ -77,6 +77,8 @@ export interface FakePluginApiOptions {
   appleMobile?: boolean;
   /** Valor inicial de `env.isoDates()` (por defecto `false`). */
   isoDates?: boolean;
+  /** `env.hostVersion` (por defecto `'0.0.0-fake'`). */
+  hostVersion?: string;
 }
 
 export interface FakePluginApi {
@@ -93,6 +95,8 @@ export interface FakePluginApi {
     httpRequests: PluginHttpRequest[];
     /** Hosts por los que se preguntó al usuario, en orden. */
     userHostPrompts: string[];
+    /** Los `reason` (ya recortados) que acompañaron esas preguntas, en orden. */
+    userHostReasons: string[];
   };
   /** Dispara un cambio de la biblioteca a los `vault.onChange`. */
   emitVaultChange(change: PluginVaultChange): void;
@@ -110,10 +114,11 @@ export interface FakePluginApi {
 export const FAKE_ROOT_FOLDER_ID = 'root';
 
 const DESKTOP: readonly PluginPlatform[] = ['macos', 'linux', 'windows'];
+const SECRET_KEY_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const USER_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 
 function available(capability: PluginCapability, platform: PluginPlatform): boolean {
-  if (capability === 'secrets') return false;
+  if (capability === 'secrets') return platform !== 'android';
   if (capability === 'tcp' || capability === 'notify.system') return DESKTOP.includes(platform);
   if (capability === 'http' || capability === 'background') return platform !== 'web';
   return true;
@@ -214,9 +219,6 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     if (!declared.has(capability)) {
       throw new FakePluginApiError('capability-not-declared', `«${capability}» sin declarar.`);
     }
-    if (capability === 'secrets') {
-      throw new FakePluginApiError('capability-not-available', '«secrets» no disponible.');
-    }
     if (!available(capability, platform)) {
       throw new FakePluginApiError('unavailable-on-platform', `«${capability}» en ${platform}.`);
     }
@@ -232,9 +234,18 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     extensions: [],
     codeBlocks: new Map(),
     httpRequests: [],
-    userHostPrompts: []
+    userHostPrompts: [],
+    userHostReasons: []
   };
   const vaultListeners = new Set<(change: PluginVaultChange) => void>();
+  /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
+  const secrets = new Map<string, string>();
+  const secretKey = (key: string): string => {
+    if (!SECRET_KEY_RE.test(key) || key.includes('..')) {
+      throw new FakePluginApiError('invalid-argument', `«${key}» no vale como clave.`);
+    }
+    return key;
+  };
   const notes = new Map<string, PluginNote>();
   let created = 0;
   let conflicts = 0;
@@ -295,6 +306,7 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     env: {
       platform,
       isDesktopApp: DESKTOP.includes(platform),
+      hostVersion: options.hostVersion ?? '0.0.0-fake',
       locale: () => 'es',
       online: true,
       onOnlineChange: () => () => {},
@@ -380,7 +392,30 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         const note = notes.get(id);
         return note ? { ...note, revision: { ...note.revision } } : null;
       },
-      noteSummary: async () => notImplemented('vault.noteSummary'),
+      async noteSummary(ids) {
+        requireCapability('vault.read');
+        // Como Hebra: solo las que existen, con la revisión y el hash que guarda la nota.
+        return ids.flatMap((id) => {
+          const note = notes.get(id);
+          if (!note) return [];
+          return [
+            {
+              id: note.id,
+              title: note.title,
+              excerpt: '',
+              createdAt: note.createdAt,
+              updatedAt: note.updatedAt,
+              favorite: note.favorite,
+              locked: note.locked,
+              folderId: note.folderId,
+              trashedAt: note.trashedAt,
+              archivedAt: note.archivedAt,
+              revision: { ...note.revision },
+              bodySha256: note.revision.bodySha256
+            }
+          ];
+        });
+      },
       async noteCreate({ folderId, body }) {
         requireCapability('vault.write');
         created += 1;
@@ -487,7 +522,7 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         recorded.httpRequests.push(request);
         return options.http ? options.http(request) : { status: 200, headers: {}, text: '' };
       },
-      async requestUserHost(raw) {
+      async requestUserHost(raw, requestOptions) {
         requireCapability('http');
         if (options.userHosts !== true) {
           throw new FakePluginApiError('host-not-declared', 'Sin network.userHosts: true.');
@@ -508,17 +543,31 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         ) {
           throw new FakePluginApiError('invalid-argument', `«${raw}» no vale como host.`);
         }
+        const reason = requestOptions?.reason;
+        if (
+          reason !== undefined &&
+          (typeof reason !== 'string' || reason.trim() === '' || reason.trim().length > 200)
+        ) {
+          throw new FakePluginApiError('invalid-argument', 'reason: texto de 1 a 200 caracteres.');
+        }
         if (hostDeclared(host) || acceptedHosts.has(host)) return true;
         recorded.userHostPrompts.push(host);
-        const allowed = (await options.confirmUserHost?.(host)) ?? false;
+        if (reason !== undefined) recorded.userHostReasons.push(reason.trim());
+        const allowed = (await options.confirmUserHost?.(host, reason?.trim())) ?? false;
         if (allowed) acceptedHosts.add(host);
         return allowed;
       }
     },
     secrets: {
-      get: async () => (requireCapability('secrets'), null),
-      set: async () => requireCapability('secrets'),
-      clear: async () => requireCapability('secrets')
+      get: async (key) => (requireCapability('secrets'), secretKey(key), secrets.get(key) ?? null),
+      set: async (key, value) => {
+        requireCapability('secrets');
+        secrets.set(secretKey(key), value);
+      },
+      clear: async (key) => {
+        requireCapability('secrets');
+        secrets.delete(secretKey(key));
+      }
     },
     tcp: {
       listen: async () => (requireCapability('tcp'), 0),

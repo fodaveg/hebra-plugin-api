@@ -10,10 +10,11 @@ class FakePluginApiError extends Error {
 /** Id de la carpeta raíz, el mismo que usa Hebra. */
 export const FAKE_ROOT_FOLDER_ID = 'root';
 const DESKTOP = ['macos', 'linux', 'windows'];
+const SECRET_KEY_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const USER_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 function available(capability, platform) {
     if (capability === 'secrets')
-        return false;
+        return platform !== 'android';
     if (capability === 'tcp' || capability === 'notify.system')
         return DESKTOP.includes(platform);
     if (capability === 'http' || capability === 'background')
@@ -118,9 +119,6 @@ export function createFakePluginApi(options = {}) {
         if (!declared.has(capability)) {
             throw new FakePluginApiError('capability-not-declared', `«${capability}» sin declarar.`);
         }
-        if (capability === 'secrets') {
-            throw new FakePluginApiError('capability-not-available', '«secrets» no disponible.');
-        }
         if (!available(capability, platform)) {
             throw new FakePluginApiError('unavailable-on-platform', `«${capability}» en ${platform}.`);
         }
@@ -135,9 +133,18 @@ export function createFakePluginApi(options = {}) {
         extensions: [],
         codeBlocks: new Map(),
         httpRequests: [],
-        userHostPrompts: []
+        userHostPrompts: [],
+        userHostReasons: []
     };
     const vaultListeners = new Set();
+    /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
+    const secrets = new Map();
+    const secretKey = (key) => {
+        if (!SECRET_KEY_RE.test(key) || key.includes('..')) {
+            throw new FakePluginApiError('invalid-argument', `«${key}» no vale como clave.`);
+        }
+        return key;
+    };
     const notes = new Map();
     let created = 0;
     let conflicts = 0;
@@ -193,6 +200,7 @@ export function createFakePluginApi(options = {}) {
         env: {
             platform,
             isDesktopApp: DESKTOP.includes(platform),
+            hostVersion: options.hostVersion ?? '0.0.0-fake',
             locale: () => 'es',
             online: true,
             onOnlineChange: () => () => { },
@@ -274,7 +282,31 @@ export function createFakePluginApi(options = {}) {
                 const note = notes.get(id);
                 return note ? { ...note, revision: { ...note.revision } } : null;
             },
-            noteSummary: async () => notImplemented('vault.noteSummary'),
+            async noteSummary(ids) {
+                requireCapability('vault.read');
+                // Como Hebra: solo las que existen, con la revisión y el hash que guarda la nota.
+                return ids.flatMap((id) => {
+                    const note = notes.get(id);
+                    if (!note)
+                        return [];
+                    return [
+                        {
+                            id: note.id,
+                            title: note.title,
+                            excerpt: '',
+                            createdAt: note.createdAt,
+                            updatedAt: note.updatedAt,
+                            favorite: note.favorite,
+                            locked: note.locked,
+                            folderId: note.folderId,
+                            trashedAt: note.trashedAt,
+                            archivedAt: note.archivedAt,
+                            revision: { ...note.revision },
+                            bodySha256: note.revision.bodySha256
+                        }
+                    ];
+                });
+            },
             async noteCreate({ folderId, body }) {
                 requireCapability('vault.write');
                 created += 1;
@@ -381,7 +413,7 @@ export function createFakePluginApi(options = {}) {
                 recorded.httpRequests.push(request);
                 return options.http ? options.http(request) : { status: 200, headers: {}, text: '' };
             },
-            async requestUserHost(raw) {
+            async requestUserHost(raw, requestOptions) {
                 requireCapability('http');
                 if (options.userHosts !== true) {
                     throw new FakePluginApiError('host-not-declared', 'Sin network.userHosts: true.');
@@ -401,19 +433,32 @@ export function createFakePluginApi(options = {}) {
                     !USER_HOST_RE.test(host)) {
                     throw new FakePluginApiError('invalid-argument', `«${raw}» no vale como host.`);
                 }
+                const reason = requestOptions?.reason;
+                if (reason !== undefined &&
+                    (typeof reason !== 'string' || reason.trim() === '' || reason.trim().length > 200)) {
+                    throw new FakePluginApiError('invalid-argument', 'reason: texto de 1 a 200 caracteres.');
+                }
                 if (hostDeclared(host) || acceptedHosts.has(host))
                     return true;
                 recorded.userHostPrompts.push(host);
-                const allowed = (await options.confirmUserHost?.(host)) ?? false;
+                if (reason !== undefined)
+                    recorded.userHostReasons.push(reason.trim());
+                const allowed = (await options.confirmUserHost?.(host, reason?.trim())) ?? false;
                 if (allowed)
                     acceptedHosts.add(host);
                 return allowed;
             }
         },
         secrets: {
-            get: async () => (requireCapability('secrets'), null),
-            set: async () => requireCapability('secrets'),
-            clear: async () => requireCapability('secrets')
+            get: async (key) => (requireCapability('secrets'), secretKey(key), secrets.get(key) ?? null),
+            set: async (key, value) => {
+                requireCapability('secrets');
+                secrets.set(secretKey(key), value);
+            },
+            clear: async (key) => {
+                requireCapability('secrets');
+                secrets.delete(secretKey(key));
+            }
         },
         tcp: {
             listen: async () => (requireCapability('tcp'), 0),

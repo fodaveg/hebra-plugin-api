@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.0.0';
+export const PLUGIN_API_VERSION = '1.1.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -56,7 +56,7 @@ export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
  * - `unavailable-on-platform`: declarada, pero esta plataforma no la tiene (TCP en
  *   iPhone, §7). No se llega a invocar nada nativo.
  * - `capability-not-available`: declarada, pero esta versión de Hebra todavía no la
- *   implementa en ninguna plataforma (hoy `secrets`).
+ *   implementa en ninguna plataforma (hoy, ninguna).
  * - `host-not-declared`: `http.request` a un host que no está en `network.hosts` ni lo
  *   ha aceptado el usuario (`http.requestUserHost`), o `requestUserHost` sin
  *   `network.userHosts: true` en `hebra.json` (§8.4).
@@ -206,7 +206,12 @@ export interface PluginUi {
   /** Tras abrir la biblioteca; si ya está abierta, en el acto. */
   onReady(callback: () => void): PluginUnregister;
   openExternal(url: string): Promise<void>;
-  /** Selector de carpeta DE LA BIBLIOTECA (ruta), `null` si se cancela. */
+  /**
+   * Selector de carpeta DE LA BIBLIOTECA (no del sistema de ficheros). Resuelve con el
+   * ID de la carpeta elegida (el mismo que `vault.foldersList` y `PluginNoteSummary.folderId`),
+   * NO con su ruta ni su nombre. Resuelve `null` si el usuario cancela y también si elige
+   * «Raíz»: para la raíz, `vault.rootFolderId()`.
+   */
   pickFolder(): Promise<string | null>;
 }
 
@@ -280,6 +285,19 @@ export interface PluginNoteSummary extends PluginNoteListItem {
   folderId: string;
   trashedAt: number | null;
   archivedAt: number | null;
+  /**
+   * Desde la 1.1. La revisión que Hebra tiene guardada de la nota (`localSeq` de la fila
+   * y hash del cuerpo): la base de un `noteSave` o `notesRewriteBatch` sin releer el
+   * cuerpo. `null` solo si el motor de la biblioteca no informó de `localSeq`.
+   */
+  revision: PluginNoteRevision | null;
+  /**
+   * Desde la 1.1. SHA-256 hexadecimal del cuerpo, el que Hebra guarda con la nota (no se
+   * calcula al pedirlo, así que no cuesta leer el cuerpo). Es el mismo valor que
+   * `revision.bodySha256`. Vale también en una nota protegida: es el hash del cuerpo
+   * guardado, no su texto.
+   */
+  bodySha256: string;
 }
 
 /** Ámbito de `notesPage`: toda la biblioteca o una carpeta. */
@@ -524,6 +542,12 @@ export interface PluginHttpResponse {
   text: string;
 }
 
+/** Opciones de `http.requestUserHost` (desde la 1.1). */
+export interface PluginRequestUserHostOptions {
+  /** Por qué pide el permiso; sale en el diálogo. Hasta 200 caracteres. */
+  reason?: string;
+}
+
 /**
  * Sin CORS. Un 4xx/5xx vuelve como respuesta. Solo llega a dos clases de host:
  *
@@ -550,11 +574,34 @@ export interface PluginHttp {
    * de `http`, con `capability-not-declared` o `unavailable-on-platform`. En la web
    * `http` todavía no existe (espera al relé de `app.hebra.pro`), así que ahí rechaza
    * siempre con `unavailable-on-platform` sin preguntar nada.
+   *
+   * Desde la 1.1, `options.reason` es un texto corto (hasta 200 caracteres; si no,
+   * `invalid-argument`) que el diálogo enseña al usuario. No hace falta una petición
+   * `request` después: se puede llamar solo para pedir el permiso en el momento en que
+   * el usuario elige el host, p. ej. al guardar un ajuste:
+   *
+   * ```ts
+   * // Al guardar el ajuste «webhook», no en la primera entrega.
+   * const ok = await api.http.requestUserHost(settings.webhookUrl, {
+   *   reason: 'Para enviar el aviso de cada entrega a tu webhook.'
+   * });
+   * if (!ok) showError('Sin permiso no se pueden enviar avisos.');
+   * ```
    */
-  requestUserHost(url: string): Promise<boolean>;
+  requestUserHost(url: string, options?: PluginRequestUserHostOptions): Promise<boolean>;
 }
 
-/** Llavero del dispositivo. Nunca se sincroniza. */
+/**
+ * Llavero del dispositivo, propio de cada plugin: un plugin no lee los secretos de otro
+ * ni los de Hebra. Nunca se sincroniza (cada dispositivo guarda los suyos).
+ *
+ * - Apps de macOS, iOS, Linux y Windows: el llavero del sistema.
+ * - Web: solo memoria de la pestaña (se pierde al recargar).
+ * - Android: no disponible (`unavailable-on-platform`).
+ *
+ * La clave es de 1 a 64 caracteres `[A-Za-z0-9._-]`, sin `..`; el valor, texto de hasta
+ * 64 KiB (UTF-8). Si no, `invalid-argument`. `get` de una clave sin valor resuelve `null`.
+ */
 export interface PluginSecrets {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -595,6 +642,14 @@ export interface PluginEnv {
   readonly platform: PluginPlatform;
   /** App de escritorio (macOS, Linux, Windows), no la web ni el móvil. */
   readonly isDesktopApp: boolean;
+  /**
+   * Desde la 1.1. La versión de la APP de Hebra que corre (la de `package.json` del build,
+   * p. ej. `'0.1.0'`; `'desarrollo'` si el build no la define). NO es la versión de esta
+   * API (`api.apiVersion`) ni el commit del build: sirve para diagnóstico y para pegar en
+   * un informe de fallo, no para decidir qué funciones existen (para eso, `api.has()` y
+   * `apiVersion`).
+   */
+  readonly hostVersion: string;
   locale(): string;
   readonly online: boolean;
   onOnlineChange(listener: (online: boolean) => void): PluginUnregister;
@@ -617,7 +672,7 @@ export interface PluginEnv {
 // ---- La API ----
 
 export interface HebraPluginApi {
-  /** La que implementa Hebra, p. ej. `'1.0.0'`. */
+  /** La que implementa Hebra, p. ej. `'1.1.0'`. */
   readonly apiVersion: string;
   readonly plugin: { readonly id: string; readonly version: string };
   /** Declarada Y disponible en esta plataforma. */

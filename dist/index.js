@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.0.0';
+export const PLUGIN_API_VERSION = '1.1.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**
@@ -31,7 +31,7 @@ export const PLUGIN_CAPABILITIES = [
  * - `unavailable-on-platform`: declarada, pero esta plataforma no la tiene (TCP en
  *   iPhone, §7). No se llega a invocar nada nativo.
  * - `capability-not-available`: declarada, pero esta versión de Hebra todavía no la
- *   implementa en ninguna plataforma (hoy `secrets`).
+ *   implementa en ninguna plataforma (hoy, ninguna).
  * - `host-not-declared`: `http.request` a un host que no está en `network.hosts` ni lo
  *   ha aceptado el usuario (`http.requestUserHost`), o `requestUserHost` sin
  *   `network.userHosts: true` en `hebra.json` (§8.4).
