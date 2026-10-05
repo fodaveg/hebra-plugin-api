@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.1.0';
+export const PLUGIN_API_VERSION = '1.2.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -376,6 +376,14 @@ export type PluginVaultChange =
  *   la deja «Sin título».
  * - Para fijar un título sin tocar el `# …`, escribe la propiedad con
  *   `markdown.withTitle(body, title)`, que gana al H1.
+ *
+ * **Tareas marcadas.** En `noteSave` y `notesRewriteBatch`, una tarea que el cuerpo
+ * nuevo pasa de `- [ ]` a `- [x]` (sin cambiar nada más de su línea) baja al final de su
+ * lista con sus hijas, y una que pasa de `- [x]` a `- [ ]` sube detrás de la última
+ * pendiente, como al marcarla o desmarcarla en el editor, si el ajuste «Mover las tareas
+ * completadas al final» del dispositivo está encendido y la revisión esperada es la
+ * guardada. Lo guardado puede no ser el cuerpo enviado: `revision.bodySha256` es el de
+ * lo guardado. `createFakePluginApi` (`testing`) guarda el cuerpo tal cual.
  */
 export interface PluginVault {
   libraryId(): string;
@@ -401,10 +409,25 @@ export interface PluginVault {
   ): Promise<PluginNotesRewriteResult>;
   noteMove(id: string, folderId: string): Promise<PluginNote>;
   noteTrash(id: string): Promise<PluginNote>;
+  /** Desde 1.2: solo restaura una nota en papelera si conserva fecha y revisión,
+   * sin tocar una protegida, modificada o ya restaurada. `false` si no coincide. */
+  noteRestore(
+    id: string,
+    expected: {
+      trashedAt: number;
+      revision: PluginNoteRevision;
+    }
+  ): Promise<boolean>;
   foldersList(): Promise<PluginFolder[]>;
   folderCreate(parentId: string | null, name: string): Promise<PluginFolder>;
   folderRename(id: string, name: string): Promise<PluginFolder>;
   folderMove(id: string, parentId: string | null): Promise<PluginFolder>;
+  /** Desde 1.2: marca lápida solo una carpeta vacía con nombre y padre esperados;
+   * `false` si falta, cambió o contiene cualquier carpeta, nota o recurso. */
+  folderTrashEmpty(
+    id: string,
+    expected: { name: string; parentId: string | null }
+  ): Promise<boolean>;
   filesPage(
     folderId: string,
     subfolders: boolean,
@@ -556,8 +579,20 @@ export interface PluginRequestUserHostOptions {
  *   `network.userHosts: true` y el usuario lo ha permitido con `requestUserHost`.
  *
  * Cualquier otro rechaza con `host-not-declared` sin salir a la red.
+ *
+ * En la web, `http` pasa por un relé del mismo origen de `app.hebra.pro` que solo llega
+ * a los hosts EXACTOS de `network.hosts` (los del usuario no existen allí): un host que
+ * solo casa con un comodín, o con otro puerto, rechaza con `unavailable-on-platform`.
+ * La respuesta tiene la misma forma que en las apps.
  */
 export interface PluginHttp {
+  /**
+   * Hace la petición (ver arriba qué hosts alcanza).
+   *
+   * Nunca pongas secretos en la consulta de la URL; usa la cabecera `Authorization`. La URL
+   * entera (con su consulta) puede quedar en los registros de un servidor por el que pasa,
+   * también el relé de la web; `Authorization` no.
+   */
   request(request: PluginHttpRequest): Promise<PluginHttpResponse>;
   /**
    * Pide permiso para llamar al host de `url`, que ha elegido el usuario. Solo `https:`,
@@ -572,8 +607,8 @@ export interface PluginHttp {
    * Rechaza con `host-not-declared` si `hebra.json` no declara `network.userHosts: true`;
    * con `invalid-argument` si la URL no es `https:` o el host no vale; y, como el resto
    * de `http`, con `capability-not-declared` o `unavailable-on-platform`. En la web
-   * `http` todavía no existe (espera al relé de `app.hebra.pro`), así que ahí rechaza
-   * siempre con `unavailable-on-platform` sin preguntar nada.
+   * `http` va por el relé de `app.hebra.pro`, que solo llega a `network.hosts`: ahí
+   * rechaza siempre con `unavailable-on-platform` sin preguntar nada.
    *
    * Desde la 1.1, `options.reason` es un texto corto (hasta 200 caracteres; si no,
    * `invalid-argument`) que el diálogo enseña al usuario. No hace falta una petición

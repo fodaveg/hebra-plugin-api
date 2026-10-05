@@ -1,6 +1,6 @@
 {
   "name": "hebra-plugin-api",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Tipos de la API de plugins de Hebra, préstamo de CodeMirror en build (hebraShared) y host falso para tests.",
   "type": "module",
   "exports": {

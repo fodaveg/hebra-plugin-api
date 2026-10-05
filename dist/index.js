@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.1.0';
+export const PLUGIN_API_VERSION = '1.2.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**

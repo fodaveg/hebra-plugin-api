@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra, versión `1.0.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra, versión `1.2.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.0.0`.
 
@@ -47,7 +47,9 @@ await build({
 
 ## Capacidades y errores
 
-`ui`, `env`, `storage`, `markdown` y `workspace` están siempre. Un `hebra.json` que declare `workspace` sigue siendo válido: Hebra lo acepta y lo ignora. El resto (`vault.read`, `vault.write`, `editor`, `http`, `secrets`, `tcp`, `notify.system`, `background`) se declara en `hebra.json`; sin declarar, cada método rechaza con `capability-not-declared`. Una capacidad declarada que la plataforma no tiene (TCP en iPhone) rechaza con `unavailable-on-platform`. `api.has(capacidad)` dice si se puede usar aquí. `secrets` guarda en el llavero del dispositivo en las apps (solo en memoria en la web; no existe en Android). `http` solo habla `https:` con los hosts de `network.hosts` y los que el usuario permite con `requestUserHost`; Hebra los vuelve a comprobar en Rust contra el `hebra.json` instalado y rechaza cualquier dirección privada o local tras resolver DNS (en la web todavía no existe).
+`ui`, `env`, `storage`, `markdown` y `workspace` están siempre. Un `hebra.json` que declare `workspace` sigue siendo válido: Hebra lo acepta y lo ignora. El resto (`vault.read`, `vault.write`, `editor`, `http`, `secrets`, `tcp`, `notify.system`, `background`) se declara en `hebra.json`; sin declarar, cada método rechaza con `capability-not-declared`. Una capacidad declarada que la plataforma no tiene (TCP en iPhone) rechaza con `unavailable-on-platform`. `api.has(capacidad)` dice si se puede usar aquí. `secrets` guarda en el llavero del dispositivo en las apps (solo en memoria en la web; no existe en Android). `http` solo habla `https:` con los hosts de `network.hosts` y los que el usuario permite con `requestUserHost`; Hebra los vuelve a comprobar en Rust contra el `hebra.json` instalado y rechaza cualquier dirección privada o local tras resolver DNS. En la web pasa por un relé del mismo origen en `app.hebra.pro` que solo llega a los hosts EXACTOS de `network.hosts` de los plugins del listado de Hebra que se ofrecen en la web: un host que solo casa con un comodín, o con otro puerto, rechaza allí con `unavailable-on-platform`, y la respuesta tiene la misma forma que en las apps.
+
+Nunca pongas secretos en la consulta de la URL; usa la cabecera `Authorization`. La URL entera (con su consulta) puede quedar en los registros de un servidor por el que pasa, también el relé de la web; `Authorization` no.
 
 Los errores se reconocen con `isPluginApiError(error, 'host-not-declared')`, nunca con `instanceof`.
 
@@ -65,7 +67,7 @@ if (await api.http.requestUserHost('https://hooks.ejemplo.com/abc')) {
 }
 ```
 
-La primera vez Hebra pregunta al usuario («Permitir» / «No permitir»); el sí se recuerda para ese plugin en ese dispositivo (no se sincroniza) y se puede quitar en Ajustes › Plugins. Solo `https:`, host exacto, sin comodines ni IP. Sin `userHosts: true`, `requestUserHost` rechaza con `host-not-declared`; en la web rechaza con `unavailable-on-platform` hasta que exista el relé de Hebra.
+La primera vez Hebra pregunta al usuario («Permitir» / «No permitir»); el sí se recuerda para ese plugin en ese dispositivo (no se sincroniza) y se puede quitar en Ajustes › Plugins. Solo `https:`, host exacto, sin comodines ni IP. Sin `userHosts: true`, `requestUserHost` rechaza con `host-not-declared`; en la web rechaza siempre con `unavailable-on-platform`: allí `http` va por el relé de Hebra, que solo llega a `network.hosts` (un host que elige el usuario lo convertiría en un proxy abierto).
 
 ## Entorno
 
@@ -88,6 +90,10 @@ const ok = await api.http.requestUserHost(settings.webhookUrl, {
 ```
 
 - Host falso: `noteSummary`, `hostVersion` (opción) y `recorded.userHostReasons`.
+
+## Novedades de la 1.2
+
+`vault.folderTrashEmpty(id, { name, parentId })` marca lápida únicamente si la carpeta sigue vacía y coincide con la identidad observada. `vault.noteRestore(id, { trashedAt, revision })` restaura únicamente la nota de papelera sin cambios y sin protección. Ambas devuelven `false` cuando la condición ya no se cumple; requieren `vault.write`. Un plugin que las necesite debe comprobar que existen o declarar `"apiVersion": "^1.2.0"`.
 
 ## Host falso
 

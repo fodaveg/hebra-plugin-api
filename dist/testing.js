@@ -17,7 +17,8 @@ function available(capability, platform) {
         return platform !== 'android';
     if (capability === 'tcp' || capability === 'notify.system')
         return DESKTOP.includes(platform);
-    if (capability === 'http' || capability === 'background')
+    // `http` está también en la web (por el relé de Hebra), con sus límites en `http`.
+    if (capability === 'background')
         return platform !== 'web';
     return true;
 }
@@ -184,6 +185,10 @@ export function createFakePluginApi(options = {}) {
     const folders = [
         { id: FAKE_ROOT_FOLDER_ID, parentId: null, name: '', createdAt: 0, updatedAt: 0 }
     ];
+    // Conserva las lápidas para que un padre con una hija retirada siga sin estar vacío.
+    const trashedFolders = new Set();
+    const files = [];
+    let createdFolders = 0;
     const notImplemented = (what) => {
         throw new Error(`createFakePluginApi: «${what}» no está en el host falso.`);
     };
@@ -341,18 +346,113 @@ export function createFakePluginApi(options = {}) {
                 }
                 return { written, stale };
             },
-            noteMove: async () => notImplemented('vault.noteMove'),
-            noteTrash: async () => notImplemented('vault.noteTrash'),
+            async noteMove(id, folderId) {
+                requireCapability('vault.write');
+                const note = notes.get(id);
+                if (!note)
+                    throw new Error(`createFakePluginApi: la nota «${id}» no existe.`);
+                note.folderId = folderId;
+                note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+                return { ...note, revision: { ...note.revision } };
+            },
+            async noteTrash(id) {
+                requireCapability('vault.write');
+                const note = notes.get(id);
+                if (!note)
+                    throw new Error(`createFakePluginApi: la nota «${id}» no existe.`);
+                note.trashedAt ??= now();
+                note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+                return { ...note, revision: { ...note.revision } };
+            },
+            async noteRestore(id, expected) {
+                requireCapability('vault.write');
+                const note = notes.get(id);
+                if (!note ||
+                    note.locked ||
+                    note.trashedAt === null ||
+                    note.trashedAt !== expected.trashedAt ||
+                    !sameRevision(note.revision, expected.revision)) {
+                    return false;
+                }
+                note.trashedAt = null;
+                note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+                return true;
+            },
             async foldersList() {
                 requireCapability('vault.read');
-                return folders.map((folder) => ({ ...folder }));
+                return folders
+                    .filter((folder) => !trashedFolders.has(folder.id))
+                    .map((folder) => ({ ...folder }));
             },
-            folderCreate: async () => notImplemented('vault.folderCreate'),
-            folderRename: async () => notImplemented('vault.folderRename'),
-            folderMove: async () => notImplemented('vault.folderMove'),
-            filesPage: async () => notImplemented('vault.filesPage'),
-            fileRead: async () => notImplemented('vault.fileRead'),
-            fileCreate: async () => notImplemented('vault.fileCreate'),
+            async folderCreate(parentId, name) {
+                requireCapability('vault.write');
+                createdFolders += 1;
+                const folder = {
+                    id: `carpeta-${createdFolders}`,
+                    parentId,
+                    name,
+                    createdAt: now(),
+                    updatedAt: now()
+                };
+                folders.push(folder);
+                return { ...folder };
+            },
+            async folderRename(id, name) {
+                requireCapability('vault.write');
+                const folder = folders.find((entry) => entry.id === id);
+                if (!folder)
+                    throw new Error(`createFakePluginApi: carpeta «${id}» ausente.`);
+                folder.name = name;
+                return { ...folder };
+            },
+            async folderMove(id, parentId) {
+                requireCapability('vault.write');
+                const folder = folders.find((entry) => entry.id === id);
+                if (!folder)
+                    throw new Error(`createFakePluginApi: carpeta «${id}» ausente.`);
+                folder.parentId = parentId;
+                return { ...folder };
+            },
+            async folderTrashEmpty(id, expected) {
+                requireCapability('vault.write');
+                const index = folders.findIndex((entry) => entry.id === id);
+                const folder = folders[index];
+                if (id === FAKE_ROOT_FOLDER_ID ||
+                    !folder ||
+                    trashedFolders.has(id) ||
+                    folder.name !== expected.name ||
+                    folder.parentId !== expected.parentId ||
+                    folders.some((entry) => entry.parentId === id) ||
+                    [...notes.values()].some((note) => note.folderId === id) ||
+                    files.some((file) => file.folderId === id))
+                    return false;
+                trashedFolders.add(id);
+                return true;
+            },
+            async filesPage(folderId) {
+                requireCapability('vault.read');
+                return { items: files.filter((file) => file.folderId === folderId), nextCursor: null };
+            },
+            async fileRead(ref) {
+                requireCapability('vault.read');
+                return files.find((file) => file.id === ref || file.name === ref) ?? null;
+            },
+            async fileCreate(folderId, name, sha256) {
+                requireCapability('vault.write');
+                const file = {
+                    id: `recurso-${files.length + 1}`,
+                    folderId: folderId ?? FAKE_ROOT_FOLDER_ID,
+                    name,
+                    sha256,
+                    byteLength: 0,
+                    mime: null,
+                    createdAt: now(),
+                    updatedAt: now(),
+                    trashedAt: null
+                };
+                files.push(file);
+                return { ...file };
+            },
             fileReplace: async () => notImplemented('vault.fileReplace'),
             fileTrash: async () => notImplemented('vault.fileTrash'),
             blobRead: async () => notImplemented('vault.blobRead'),
@@ -403,9 +503,14 @@ export function createFakePluginApi(options = {}) {
                 requireCapability('http');
                 const url = new URL(request.url);
                 const host = url.hostname;
-                const userHost = !hostDeclared(host) && options.userHosts === true && acceptedHosts.has(host);
+                const onWeb = platform === 'web';
+                const userHost = !onWeb && !hostDeclared(host) && options.userHosts === true && acceptedHosts.has(host);
                 if (!hostDeclared(host) && !userHost) {
                     throw new FakePluginApiError('host-not-declared', `«${host}» sin declarar.`);
+                }
+                // En la web, el relé de Hebra solo llega a hosts EXACTOS de `network.hosts`.
+                if (onWeb && (url.port !== '' || !(options.hosts ?? []).includes(host))) {
+                    throw new FakePluginApiError('unavailable-on-platform', `«${url.host}» en la web.`);
                 }
                 if (userHost && url.protocol !== 'https:') {
                     throw new FakePluginApiError('invalid-argument', `«${url.protocol}» sin https.`);
@@ -415,6 +520,9 @@ export function createFakePluginApi(options = {}) {
             },
             async requestUserHost(raw, requestOptions) {
                 requireCapability('http');
+                if (platform === 'web') {
+                    throw new FakePluginApiError('unavailable-on-platform', 'Sin hosts del usuario en la web.');
+                }
                 if (options.userHosts !== true) {
                     throw new FakePluginApiError('host-not-declared', 'Sin network.userHosts: true.');
                 }
