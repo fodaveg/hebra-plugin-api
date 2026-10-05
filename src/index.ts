@@ -422,8 +422,9 @@ export interface PluginVault {
   folderCreate(parentId: string | null, name: string): Promise<PluginFolder>;
   folderRename(id: string, name: string): Promise<PluginFolder>;
   folderMove(id: string, parentId: string | null): Promise<PluginFolder>;
-  /** Desde 1.2: marca lápida solo una carpeta vacía con nombre y padre esperados;
-   * `false` si falta, cambió o contiene cualquier carpeta, nota o recurso. */
+  /** Desde 1.2: marca lápida solo una carpeta con nombre y padre esperados;
+   * permite hijas ya retiradas vacías, pero no hijas vivas ni notas o recursos
+   * asociados en ningún nivel, incluso si están retirados. */
   folderTrashEmpty(
     id: string,
     expected: { name: string; parentId: string | null }

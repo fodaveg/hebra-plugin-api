@@ -522,17 +522,30 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
       },
       async folderTrashEmpty(id, expected) {
         requireCapability('vault.write');
-        const index = folders.findIndex((entry) => entry.id === id);
-        const folder = folders[index];
+        const folder = folders.find((entry) => entry.id === id);
         if (
           id === FAKE_ROOT_FOLDER_ID ||
           !folder ||
           trashedFolders.has(id) ||
           folder.name !== expected.name ||
-          folder.parentId !== expected.parentId ||
-          folders.some((entry) => entry.parentId === id) ||
-          [...notes.values()].some((note) => note.folderId === id) ||
-          files.some((file) => file.folderId === id)
+          folder.parentId !== expected.parentId
+        )
+          return false;
+        // Una hija con lápida se puede dejar atrás; una carpeta viva o contenido en
+        // cualquier nivel del subárbol (también retirado) nunca se descarta.
+        const subtree = new Set([id]);
+        let size = 0;
+        while (size !== subtree.size) {
+          size = subtree.size;
+          for (const entry of folders)
+            if (entry.parentId && subtree.has(entry.parentId)) subtree.add(entry.id);
+        }
+        if (
+          folders.some(
+            (entry) => entry.id !== id && subtree.has(entry.id) && !trashedFolders.has(entry.id)
+          ) ||
+          [...notes.values()].some((note) => subtree.has(note.folderId)) ||
+          files.some((file) => subtree.has(file.folderId))
         )
           return false;
         trashedFolders.add(id);

@@ -93,7 +93,7 @@ const ok = await api.http.requestUserHost(settings.webhookUrl, {
 
 ## Novedades de la 1.2
 
-`vault.folderTrashEmpty(id, { name, parentId })` marca lápida únicamente si la carpeta sigue vacía y coincide con la identidad observada. `vault.noteRestore(id, { trashedAt, revision })` restaura únicamente la nota de papelera sin cambios y sin protección. Ambas devuelven `false` cuando la condición ya no se cumple; requieren `vault.write`. Un plugin que las necesite debe comprobar que existen o declarar `"apiVersion": "^1.2.0"`.
+`vault.folderTrashEmpty(id, { name, parentId })` marca lápida únicamente si la carpeta coincide con la identidad observada y no tiene hijas vivas ni notas o recursos en ningún descendiente; admite hijas ya retiradas y vacías al deshacer de abajo arriba. `vault.noteRestore(id, { trashedAt, revision })` restaura únicamente la nota de papelera sin cambios y sin protección. Ambas devuelven `false` cuando la condición ya no se cumple; requieren `vault.write`. Un plugin que las necesite debe comprobar que existen o declarar `"apiVersion": "^1.2.0"`.
 
 ## Host falso
 
