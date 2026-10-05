@@ -2,7 +2,7 @@
 
 API pública de los plugins de Hebra, versión `1.2.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
-Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.0.0`.
+Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0`.
 
 ## Qué trae
 
@@ -98,3 +98,9 @@ const ok = await api.http.requestUserHost(settings.webhookUrl, {
 ## Host falso
 
 `createFakePluginApi()` imita lo que un plugin decide con ello: revisiones de nota (una `noteSave` con revisión vieja guarda una copia de conflicto y devuelve `redirected`; `notesRewriteBatch` devuelve en `stale` las de revisión vieja o que no existen), la regla del título, los hosts del usuario (`confirmUserHost`, `revokeUserHost`) y las fechas ISO (`setIsoDates`).
+
+Los métodos `noteTrashIfUnchanged` y `noteMoveIfUnchanged` reciben la revisión y carpeta observadas; `noteRestoreIfUnchanged`, la revisión y fecha de papelera. Devuelven la nota confirmada o `null` sin efectos si cambió o está protegida. `folderRenameIfUnchanged` y `folderMoveIfUnchanged` comparan nombre y padre y devuelven la carpeta confirmada o `null`. Todos requieren `vault.write`. `noteRestore` conserva su resultado booleano.
+
+`notesRewriteBatch` conserva `written` y `stale` y añade `committed: {id, body, revision}[]`, capturado dentro de la misma transacción. `body` es el texto guardado, incluido el orden de tareas que aplique Hebra, y `revision` corresponde a ese texto.
+
+Para deshacer texto, cada entrada de `notesRewriteBatch` puede pedir `strictRevision: true`: exige secuencia **y** hash, incluidos los cambios externos que guardan el mismo texto. Sin esa bandera conserva la comparación histórica por secuencia **o** hash.

@@ -310,6 +310,8 @@ export type PluginNoteSaveResult =
   | { outcome: 'redirected'; id: string; revision: PluginNoteRevision };
 
 export interface PluginNoteRewrite {
+  /** Exige secuencia Y hash observados; úsalo al deshacer. Por defecto basta uno. */
+  strictRevision?: boolean;
   id: string;
   body: string;
   expected: PluginNoteRevision;
@@ -319,6 +321,18 @@ export interface PluginNotesRewriteResult {
   written: string[];
   /** Cambiaron entre medias (o ya no existen) y se saltaron sin tocarlas. */
   stale: string[];
+  /** Cuerpo efectivo y revisión confirmados en la misma transacción que la escritura. */
+  committed: { id: string; body: string; revision: PluginNoteRevision }[];
+}
+
+export interface PluginNoteMutationGuard {
+  revision: PluginNoteRevision;
+  folderId: string;
+}
+
+export interface PluginFolderMutationGuard {
+  name: string;
+  parentId: string | null;
 }
 
 export interface PluginFolder {
@@ -408,7 +422,15 @@ export interface PluginVault {
     options?: { cause?: string | null; touchUpdatedAt?: boolean }
   ): Promise<PluginNotesRewriteResult>;
   noteMove(id: string, folderId: string): Promise<PluginNote>;
+  /** CAS de revisión y carpeta; devuelve la nota del commit o null sin efectos. */
+  noteMoveIfUnchanged(
+    id: string,
+    folderId: string,
+    expected: PluginNoteMutationGuard
+  ): Promise<PluginNote | null>;
   noteTrash(id: string): Promise<PluginNote>;
+  /** Solo tira una nota activa, sin protección, con revisión y carpeta intactas. */
+  noteTrashIfUnchanged(id: string, expected: PluginNoteMutationGuard): Promise<PluginNote | null>;
   /** Desde 1.2: solo restaura una nota en papelera si conserva fecha y revisión,
    * sin tocar una protegida, modificada o ya restaurada. `false` si no coincide. */
   noteRestore(
@@ -418,10 +440,27 @@ export interface PluginVault {
       revision: PluginNoteRevision;
     }
   ): Promise<boolean>;
+  /** Como noteRestore; devuelve la nota del commit o null cuando la guardia falla. */
+  noteRestoreIfUnchanged(
+    id: string,
+    expected: { trashedAt: number; revision: PluginNoteRevision }
+  ): Promise<PluginNote | null>;
   foldersList(): Promise<PluginFolder[]>;
   folderCreate(parentId: string | null, name: string): Promise<PluginFolder>;
   folderRename(id: string, name: string): Promise<PluginFolder>;
+  /** CAS de nombre y padre; devuelve la carpeta confirmada o null sin efectos. */
+  folderRenameIfUnchanged(
+    id: string,
+    name: string,
+    expected: PluginFolderMutationGuard
+  ): Promise<PluginFolder | null>;
   folderMove(id: string, parentId: string | null): Promise<PluginFolder>;
+  /** CAS de nombre y padre; mantiene las restricciones de destino y ciclos. */
+  folderMoveIfUnchanged(
+    id: string,
+    parentId: string | null,
+    expected: PluginFolderMutationGuard
+  ): Promise<PluginFolder | null>;
   /** Desde 1.2: marca lápida solo una carpeta con nombre y padre esperados;
    * permite hijas ya retiradas vacías, pero no hijas vivas ni notas o recursos
    * asociados en ningún nivel, incluso si están retirados. */

@@ -254,9 +254,14 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
   const now = (): number => Date.now();
 
   /** Escribe `id` con `body`; `title` = el que dé el cuerpo, o el indicado. */
-  const put = (id: string, body: string, folderId: string, title = titleOf(body)): PluginNote => {
+  const put = (
+    id: string,
+    body: string,
+    folderId: string,
+    title = titleOf(body)
+  ): PluginNote & { body: string } => {
     const previous = notes.get(id);
-    const note: PluginNote = {
+    const note: PluginNote & { body: string } = {
       id,
       folderId,
       title,
@@ -274,7 +279,7 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
   };
   /** La regla de reescritura (ver cabecera): el cuerpo manda; si no da título, se
    *  conserva solo el que no salía del cuerpo anterior. */
-  const rewrite = (current: PluginNote, body: string): PluginNote => {
+  const rewrite = (current: PluginNote, body: string): PluginNote & { body: string } => {
     const derived = titleOf(body);
     const keep = derived === '' && titleOf(current.body ?? '') === '' ? current.title : derived;
     return put(current.id, body, current.folderId, keep);
@@ -444,16 +449,30 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         requireCapability('vault.write');
         const written: string[] = [];
         const stale: string[] = [];
+        const committed: {
+          id: string;
+          body: string;
+          revision: { localSeq: number; bodySha256: string };
+        }[] = [];
         for (const entry of entries) {
           const current = notes.get(entry.id);
-          if (!current || !sameRevision(current.revision, entry.expected)) {
+          if (
+            !current ||
+            current.locked ||
+            current.trashedAt !== null ||
+            (entry.strictRevision
+              ? !sameRevision(current.revision, entry.expected)
+              : current.revision.localSeq !== entry.expected.localSeq &&
+                current.revision.bodySha256 !== entry.expected.bodySha256)
+          ) {
             stale.push(entry.id);
             continue;
           }
-          rewrite(current, entry.body);
+          const saved = rewrite(current, entry.body);
           written.push(entry.id);
+          committed.push({ id: entry.id, body: saved.body, revision: { ...saved.revision } });
         }
-        return { written, stale };
+        return { written, stale, committed };
       },
       async noteMove(id, folderId) {
         requireCapability('vault.write');
@@ -463,11 +482,41 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
         return { ...note, revision: { ...note.revision } };
       },
+      async noteMoveIfUnchanged(id, folderId, expected) {
+        requireCapability('vault.write');
+        const note = notes.get(id);
+        if (
+          !note ||
+          note.locked ||
+          note.trashedAt !== null ||
+          note.folderId !== expected.folderId ||
+          !sameRevision(note.revision, expected.revision)
+        )
+          return null;
+        note.folderId = folderId;
+        note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+        return { ...note, revision: { ...note.revision } };
+      },
       async noteTrash(id) {
         requireCapability('vault.write');
         const note = notes.get(id);
         if (!note) throw new Error(`createFakePluginApi: la nota «${id}» no existe.`);
         note.trashedAt ??= now();
+        note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+        return { ...note, revision: { ...note.revision } };
+      },
+      async noteTrashIfUnchanged(id, expected) {
+        requireCapability('vault.write');
+        const note = notes.get(id);
+        if (
+          !note ||
+          note.locked ||
+          note.trashedAt !== null ||
+          note.folderId !== expected.folderId ||
+          !sameRevision(note.revision, expected.revision)
+        )
+          return null;
+        note.trashedAt = now();
         note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
         return { ...note, revision: { ...note.revision } };
       },
@@ -486,6 +535,21 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         note.trashedAt = null;
         note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
         return true;
+      },
+      async noteRestoreIfUnchanged(id, expected) {
+        requireCapability('vault.write');
+        const note = notes.get(id);
+        if (
+          !note ||
+          note.locked ||
+          note.trashedAt === null ||
+          note.trashedAt !== expected.trashedAt ||
+          !sameRevision(note.revision, expected.revision)
+        )
+          return null;
+        note.trashedAt = null;
+        note.revision = { ...note.revision, localSeq: note.revision.localSeq + 1 };
+        return { ...note, revision: { ...note.revision } };
       },
       async foldersList() {
         requireCapability('vault.read');
@@ -513,11 +577,41 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         folder.name = name;
         return { ...folder };
       },
+      async folderRenameIfUnchanged(id, name, expected) {
+        requireCapability('vault.write');
+        const folder = folders.find((entry) => entry.id === id);
+        if (
+          !folder ||
+          trashedFolders.has(id) ||
+          id === FAKE_ROOT_FOLDER_ID ||
+          folder.name !== expected.name ||
+          folder.parentId !== expected.parentId
+        )
+          return null;
+        folder.name = name;
+        folder.updatedAt = now();
+        return { ...folder };
+      },
       async folderMove(id, parentId) {
         requireCapability('vault.write');
         const folder = folders.find((entry) => entry.id === id);
         if (!folder) throw new Error(`createFakePluginApi: carpeta «${id}» ausente.`);
         folder.parentId = parentId;
+        return { ...folder };
+      },
+      async folderMoveIfUnchanged(id, parentId, expected) {
+        requireCapability('vault.write');
+        const folder = folders.find((entry) => entry.id === id);
+        if (
+          !folder ||
+          trashedFolders.has(id) ||
+          id === FAKE_ROOT_FOLDER_ID ||
+          folder.name !== expected.name ||
+          folder.parentId !== expected.parentId
+        )
+          return null;
+        folder.parentId = parentId;
+        folder.updatedAt = now();
         return { ...folder };
       },
       async folderTrashEmpty(id, expected) {
