@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -44,6 +44,19 @@ export const PLUGIN_CAPABILITIES = [
   'background'
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+
+/**
+ * Desde la 1.3. Lo que el ANFITRIÓN sabe hacer, que también se pregunta con `api.has()`.
+ * No son permisos: no se declaran en `hebra.json` (un Hebra anterior daría por incompatible
+ * un plugin que las pusiera en `capabilities.required`) y no salen en la hoja de
+ * consentimiento. Un Hebra que no conoce un nombre responde `false` sin lanzar, así que
+ * `api.has('ui.view.main')` es la forma de degradar sin comparar versiones.
+ *
+ * - `ui.view.main`: `placement: 'main'`, `ui.updateView`, `ui.updateViewSection` y la
+ *   opción `section` de `ui.revealView` (`PluginMainViewDefinition`).
+ */
+export const PLUGIN_HOST_FEATURES = ['ui.view.main'] as const;
+export type PluginHostFeature = (typeof PLUGIN_HOST_FEATURES)[number];
 
 // ---- Errores ----
 
@@ -112,7 +125,11 @@ export interface HebraPluginModule {
 /** Limpieza opcional que un `mount(el)` puede devolver. */
 export type PluginMountFn = (el: HTMLElement) => void | (() => void);
 
-/** `'column'` = pestaña del inspector (hoja en iPhone); `'dialog'` = diálogo ancho. */
+/**
+ * `'column'` = pestaña del inspector (hoja en iPhone); `'dialog'` = diálogo ancho. La
+ * pantalla principal (`'main'`, desde la 1.3) tiene su propia definición:
+ * `PluginMainViewDefinition`.
+ */
 export type PluginViewPlacement = 'column' | 'dialog';
 
 export interface PluginViewDefinition {
@@ -123,6 +140,171 @@ export interface PluginViewDefinition {
   placement?: PluginViewPlacement;
   mount(el: HTMLElement): void;
   unmount(): void;
+}
+
+/**
+ * Desde la 1.3. Una sección de una vista `'main'`: una fila de la lista que Hebra pinta en
+ * la columna central (el plugin no dibuja esa lista). Añadir o quitar secciones exige
+ * registrar la vista otra vez; lo demás se cambia en vivo con `ui.updateViewSection`.
+ *
+ * Se puede desregistrar y registrar el MISMO `id` en el mismo momento con la vista abierta:
+ * la pantalla principal no se cierra y Hebra vuelve a montar la sección que se veía (la
+ * primera, si ya no existe). Todo lo montado antes se desmonta, también lo retenido.
+ */
+export interface PluginViewSection {
+  /** Único dentro de la vista. Es el `sectionId` que recibe `mountSection`. */
+  id: string;
+  /** Texto de la fila. */
+  title: string;
+  /** Nombre Lucide; sin él, la fila va sin icono. */
+  icon?: string;
+  /** Segunda línea de la fila, en gris. */
+  subtitle?: string;
+  /** Aviso a la derecha de la fila (un recuento, «Nuevo»). `null`, `0` y `''` no pintan
+   *  nada. Hebra lo corta con puntos suspensivos si no cabe. */
+  badge?: string | number | null;
+}
+
+/**
+ * Desde la 1.3. Lo que `mountSection` puede devolver para enterarse de lo que pasa después
+ * con esa sección. Las dos funciones son opcionales y, si lanzan, Hebra lo anota con el id
+ * del plugin y sigue.
+ */
+export interface PluginViewSectionMount {
+  /** Hebra la llama UNA vez, al desmontar la sección: suelta aquí lo que montaste. */
+  unmount?(): void;
+  /**
+   * Solo con `retainSections: true`. La sección deja de verse (`false`: el usuario elige
+   * otra sección, sale de la vista o, en un iPhone, vuelve a la lista de secciones) o
+   * vuelve a verse (`true`). Recién montada está visible y no se avisa; tampoco se avisa
+   * antes de `unmount`. Sirve para parar y reanudar lo que solo tiene sentido a la vista
+   * (un temporizador, un sondeo).
+   *
+   * Medidas: `true` llega DESPUÉS de que el elemento vuelva a tener tamaño, así que mide
+   * al recibir `true`. No midas al recibir `false`: Hebra no garantiza que el elemento
+   * conserve su tamaño en ese momento. Oculto, el elemento sigue en el documento y en el
+   * mismo nodo, bajo `hidden` (`display: none`): todas sus medidas son 0 y sus
+   * `ResizeObserver` y consultas `@container` no dan nada útil.
+   */
+  onVisibilityChange?(visible: boolean): void;
+}
+
+/**
+ * Desde la 1.3. Una vista en la PANTALLA PRINCIPAL. Solo existe si
+ * `api.has('ui.view.main')`; en un Hebra anterior hay que registrar vistas `'column'` o
+ * `'dialog'` (ver «Compatibilidad»).
+ *
+ * La barra lateral izquierda no cambia. La columna central pasa a ser el título de la
+ * vista y la lista de `sections`, que pinta Hebra con el aspecto de su lista de notas. La
+ * columna de contenido es del plugin: `mountSection(el, sectionId)` dibuja en `el` la
+ * sección elegida.
+ *
+ * **Montaje.** `mountSection` es síncrona (no devuelvas una promesa) y puede devolver una
+ * función de limpieza o un `PluginViewSectionMount`.
+ *
+ * - Por defecto, cambiar de sección DESMONTA la anterior (su limpieza) y monta la nueva
+ *   en un `el` nuevo; salir de la vista desmonta la que haya, y en un iPhone también
+ *   volver a la lista de secciones.
+ * - Con `retainSections: true`, cada sección se monta una sola vez, la primera vez que se
+ *   visita, y al cambiar de sección o salir de la vista se OCULTA en vez de desmontarse
+ *   (`onVisibilityChange(false)`); al volver, `onVisibilityChange(true)`, con su DOM y su
+ *   desplazamiento vertical como estaban. Solo se desmontan al desregistrar la vista o al
+ *   apagar el plugin. Una sección oculta NO sale del documento ni cambia de nodo: se
+ *   queda bajo `hidden` (`display: none`), así que mide 0 hasta que vuelve a verse.
+ * - Una `mountSection` que lanza no tumba Hebra: se anota con el id del plugin, la columna
+ *   enseña «No se pudo abrir ‹sección›» con «Reintentar» y esa sección no cuenta como
+ *   montada.
+ * - `ui.revealView` NO monta nada al momento: Hebra llama a `mountSection` después, cuando
+ *   el contenido de la sección va a verse (en un iPhone, cuando el usuario toca la sección
+ *   en la lista o la pides con `section`). No des una sección por montada justo después
+ *   de `revealView`: lo que tengas que hacer con ella va dentro de `mountSection`.
+ * - Desde dentro de `mountSection`, de la limpieza o de `onVisibilityChange` puedes llamar
+ *   a `ui.revealView`, `ui.updateView` y `ui.updateViewSection`, y desregistrar la vista.
+ *   Un cambio de sección pedido ahí se aplica al terminar lo que estaba a medias (nunca
+ *   hay dos secciones a la vista), y si desregistras la vista dentro de `mountSection`,
+ *   Hebra llama enseguida a la limpieza que devuelvas.
+ *
+ * **El elemento `el`.** Ya está en el documento cuando `mountSection` lo recibe. Ocupa la
+ * columna de contenido entera, a lo ancho y a lo alto (en un iPhone, lo que queda bajo la
+ * barra con el botón de vuelta), sin margen ni relleno ni ancho máximo, y se desplaza en
+ * vertical si el contenido es más alto (`overflow-y: auto`; en horizontal no se desplaza).
+ * Lleva la clase `hebra-module-view-content` (la misma del diálogo de vista),
+ * `hebra-module-view-main-content` y `data-section="<id>"`. Su padre lleva las clases
+ * estables `hebra-module-view` y `hebra-module-view-main` y mide lo mismo: es donde poner
+ * `container-type` para consultas `@container`. El ancho de esa columna lo decide la
+ * ventana, no el plugin: puede ir de menos de 400 px (iPhone, ventana mínima) a más de
+ * 1000; el contenido tiene que adaptarse.
+ *
+ * **Entrar y salir.** Se entra con `ui.revealView(id)` o `ui.revealView(id, { section })`
+ * (también desde un comando o desde el `onClick` de un botón de `ribbon`); se sale cuando el
+ * usuario elige una nota, una carpeta u otra vista en la barra lateral, abre Ajustes o
+ * busca en sus notas. La sección elegida se recuerda en este dispositivo (no se
+ * sincroniza, y se borra al desinstalar el plugin con sus datos); la primera vez, o si la
+ * recordada ya no existe, se abre la primera. Con la vista YA abierta, `ui.revealView(id)`
+ * sin sección no cambia la que se ve. Al entrar, el foco va a la fila de la sección en la
+ * lista, no al contenido (en un iPhone no se mueve). En un iPhone o una ventana estrecha
+ * se ve primero la lista de secciones y, al tocar una, su contenido con un botón para
+ * volver; con `ui.revealView(id, { section })` se ve directamente el contenido.
+ *
+ * **Secciones.** Al menos una, cada una con `id` y `title` no vacíos e ids sin repetir; si
+ * no, `registerView` lanza `invalid-argument` y no registra nada.
+ *
+ * **Compatibilidad.** `api.has('ui.view.main')` es `true` desde la 1.3 y `false` antes (un
+ * Hebra anterior responde `false` a cualquier nombre que no conoce, sin lanzar). También
+ * vale comparar `api.apiVersion`:
+ *
+ * ```ts
+ * const [major, minor] = api.apiVersion.split('.').map(Number);
+ * const mainAvailable = major === 1 && minor >= 3;
+ * ```
+ *
+ * Un Hebra anterior a la 1.3 NO rechaza una vista con `placement: 'main'`: la registra sin
+ * avisar y no la enseña en ningún sitio (no es pestaña del inspector ni diálogo, y
+ * `revealView` abre el inspector en «Estadísticas»). Por eso hay que preguntar antes.
+ *
+ * **Cambiar de sitio sin reiniciar.** Para ofrecer «barra lateral / pantalla principal»,
+ * desregistra lo que haya y registra lo otro, en el mismo momento si quieres. Hebra
+ * desmonta lo que estuviera montado y, si la vista `'main'` ocupaba la pantalla principal,
+ * vuelve a la lista de notas:
+ *
+ * ```ts
+ * let offs = [api.ui.registerView({ id: 'mi-vista', title, icon, placement: 'main', sections, mountSection })];
+ * // …el usuario elige «barra lateral» en los ajustes del plugin:
+ * offs.forEach((off) => off());
+ * offs = [api.ui.registerView({ id: 'mi-columna', title, icon, mount, unmount })];
+ * ```
+ */
+export interface PluginMainViewDefinition {
+  id: string;
+  title: string;
+  /** Nombre Lucide. */
+  icon: string;
+  placement: 'main';
+  /** Las filas de la columna central, en este orden. */
+  sections: readonly PluginViewSection[];
+  /** `true`: las secciones visitadas se ocultan en vez de desmontarse (ver arriba). */
+  retainSections?: boolean;
+  mountSection(el: HTMLElement, sectionId: string): void | (() => void) | PluginViewSectionMount;
+}
+
+/** Desde la 1.3. Opciones de `ui.revealView`. */
+export interface PluginRevealViewOptions {
+  /** La sección de una vista `'main'` que se abre (y queda como la recordada). */
+  section?: string;
+}
+
+/** Desde la 1.3. Lo que `ui.updateView` puede cambiar de una vista ya registrada. */
+export interface PluginViewPatch {
+  title?: string;
+}
+
+/** Desde la 1.3. Lo que `ui.updateViewSection` puede cambiar de una sección. `null` quita
+ *  el icono, la segunda línea o el aviso. */
+export interface PluginViewSectionPatch {
+  title?: string;
+  icon?: string | null;
+  subtitle?: string | null;
+  badge?: string | number | null;
 }
 
 export interface PluginCommandDefinition {
@@ -137,7 +319,16 @@ export interface PluginRibbonDefinition {
   onClick(event?: MouseEvent): void;
   badge?: number | null;
   pending?: boolean;
-  /** La vista que abre este botón, si abre una (refleja `aria-pressed`). */
+  /**
+   * La vista a la que pertenece este botón: refleja `aria-pressed` mientras esa vista está
+   * a la vista. El botón no abre nada por sí solo: lo hace `onClick` (con `ui.revealView`).
+   *
+   * - Vista `'column'`: está pulsado mientras su pestaña del inspector es la activa y se
+   *   ve, y en ese estado el clic PLIEGA el inspector en vez de llamar a `onClick` (así
+   *   desde la 1.0).
+   * - Vista `'main'` (desde la 1.3): está pulsado mientras ocupa la pantalla principal y
+   *   el clic llama SIEMPRE a `onClick`.
+   */
   viewId?: string;
 }
 
@@ -189,8 +380,38 @@ export interface PluginStatusBarItemHandle {
  * (comando, clic, panel) se registra con el id del plugin y no tumba la app (§8.6).
  */
 export interface PluginUi {
-  registerView(view: PluginViewDefinition): PluginUnregister;
-  revealView(id: string): void;
+  /** Desde la 1.3 admite también una vista `'main'` (`PluginMainViewDefinition`); si sus
+   *  `sections` no valen, lanza `invalid-argument`. */
+  registerView(view: PluginViewDefinition | PluginMainViewDefinition): PluginUnregister;
+  /**
+   * Enseña la vista: la pestaña del inspector, el diálogo o, con `'main'`, la pantalla
+   * principal. Un id sin registrar no hace nada.
+   *
+   * `options.section` (desde la 1.3) abre una vista `'main'` en esa sección, esté ya
+   * abierta o no, y la deja como la recordada. Si esa sección no existe no lanza: con la
+   * vista ya abierta se queda en la que se ve; si no, abre la recordada o, si no hay, la
+   * primera. Sin `options.section` pasa lo mismo: la vista abierta no cambia de sección.
+   * Con `'column'` y `'dialog'` no cuenta.
+   *
+   * No monta nada antes de volver (ver «Montaje» en `PluginMainViewDefinition`). Revelar
+   * una vista `'column'` mientras una `'main'` ocupa la pantalla principal sale de ella a
+   * las notas.
+   */
+  revealView(id: string, options?: PluginRevealViewOptions): void;
+  /**
+   * Desde la 1.3 (antes no existe: comprueba `api.has('ui.view.main')`). Cambia el
+   * `title` de una vista de ESTE plugin sin desregistrarla (cualquier `placement`): el
+   * cambio se ve en el acto y lo que esté montado sigue montado. Un id que no es de una
+   * vista de este plugin no hace nada; un `title` vacío lanza `invalid-argument`.
+   */
+  updateView(id: string, patch: PluginViewPatch): void;
+  /**
+   * Desde la 1.3 (antes no existe: comprueba `api.has('ui.view.main')`). Cambia `title`,
+   * `icon`, `subtitle` o `badge` de una sección de una vista `'main'` de este plugin, sin
+   * desmontar nada. Solo se tocan los campos que vengan en `patch`. Una vista o una
+   * sección que no existen no hacen nada; un `title` vacío lanza `invalid-argument`.
+   */
+  updateViewSection(viewId: string, sectionId: string, patch: PluginViewSectionPatch): void;
   registerCommand(command: PluginCommandDefinition): PluginUnregister;
   ribbon(item: PluginRibbonDefinition): PluginUnregister;
   ribbonItem(item: PluginRibbonDefinition): PluginRibbonHandle;
@@ -319,8 +540,14 @@ export interface PluginNoteRewrite {
 
 export interface PluginNotesRewriteResult {
   written: string[];
-  /** Cambiaron entre medias (o ya no existen) y se saltaron sin tocarlas. */
+  /** No se escribieron: cambiaron entre medias o ya no existen. */
   stale: string[];
+  /**
+   * Campo opcional añadido sin subir la versión del API: las de `stale` que ya no existen
+   * (siempre ⊆ `stale`). Reintentarlas no converge: no las releas ni las reintentes. Solo
+   * viene si hay alguna; un host anterior no lo trae (trátalo como `[]`).
+   */
+  missing?: string[];
   /** Cuerpo efectivo y revisión confirmados en la misma transacción que la escritura. */
   committed: { id: string; body: string; revision: PluginNoteRevision }[];
 }
@@ -479,6 +706,10 @@ export interface PluginVault {
   fileCreate(folderId: string | null, name: string, sha256: string): Promise<PluginFile>;
   fileReplace(id: string, sha256: string, expectedSha256?: string | null): Promise<PluginFile>;
   fileTrash(id: string): Promise<PluginFile>;
+  /** Los bytes de un fichero por su `sha256` (el de `PluginFile`). Si este dispositivo
+   * todavía no los ha bajado, Hebra los pide al relé de sync, los guarda y los entrega:
+   * puede tardar lo que una descarga. `null` si no se pueden conseguir ahora (sin sync,
+   * sin red o el relé no los tiene); no rechaza por eso y otra llamada lo reintenta. */
   blobRead(sha256: string): Promise<Uint8Array | null>;
   blobPut(bytes: Uint8Array, options?: { mime?: string | null }): Promise<PluginBlobPutResult>;
   onChange(listener: (change: PluginVaultChange) => void): PluginUnregister;
@@ -747,11 +978,14 @@ export interface PluginEnv {
 // ---- La API ----
 
 export interface HebraPluginApi {
-  /** La que implementa Hebra, p. ej. `'1.1.0'`. */
+  /** La que implementa Hebra, p. ej. `'1.3.0'`. Con ella un plugin decide si puede usar
+   *  algo añadido en una versión menor (p. ej. `placement: 'main'`, desde la 1.3). */
   readonly apiVersion: string;
   readonly plugin: { readonly id: string; readonly version: string };
-  /** Declarada Y disponible en esta plataforma. */
-  has(capability: PluginCapability): boolean;
+  /** Una capacidad: declarada Y disponible en esta plataforma. Una función del anfitrión
+   *  (`PluginHostFeature`, desde la 1.3): si este Hebra la tiene. Un nombre que este Hebra
+   *  no conoce da `false`, nunca lanza. */
+  has(capability: PluginCapability | PluginHostFeature): boolean;
   readonly env: PluginEnv;
   readonly ui: PluginUi;
   readonly editor: PluginEditor;

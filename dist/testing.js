@@ -1,4 +1,4 @@
-import { PLUGIN_API_VERSION } from './index.js';
+import { PLUGIN_API_VERSION, PLUGIN_HOST_FEATURES } from './index.js';
 class FakePluginApiError extends Error {
     code;
     name = 'PluginApiError';
@@ -6,6 +6,28 @@ class FakePluginApiError extends Error {
         super(message);
         this.code = code;
     }
+}
+/** Peticiones encadenadas que atiende una sola entrada (como Hebra): dos secciones que
+ *  se piden la una a la otra no cuelgan el test. */
+const MAX_CHAINED_SECTION_REQUESTS = 8;
+/** Las mismas reglas que Hebra (`PluginMainViewDefinition`, «Secciones»). */
+function mainSectionsProblem(view) {
+    const sections = view.sections;
+    if (!Array.isArray(sections) || sections.length === 0) {
+        return `Vista «${view.id}»: una vista «main» necesita al menos una sección.`;
+    }
+    const seen = new Set();
+    for (const section of sections) {
+        const valid = typeof section?.id === 'string' &&
+            section.id.trim() !== '' &&
+            typeof section.title === 'string' &&
+            section.title.trim() !== '' &&
+            !seen.has(section.id);
+        if (!valid)
+            return `Vista «${view.id}»: cada sección necesita \`id\` único y \`title\`.`;
+        seen.add(section.id);
+    }
+    return typeof view.mountSection === 'function' ? null : `Vista «${view.id}»: falta mountSection.`;
 }
 /** Id de la carpeta raíz, el mismo que usa Hebra. */
 export const FAKE_ROOT_FOLDER_ID = 'root';
@@ -126,6 +148,8 @@ export function createFakePluginApi(options = {}) {
     };
     const recorded = {
         views: [],
+        mainViews: [],
+        reveals: [],
         commands: [],
         ribbon: [],
         settingsPanels: [],
@@ -135,7 +159,8 @@ export function createFakePluginApi(options = {}) {
         codeBlocks: new Map(),
         httpRequests: [],
         userHostPrompts: [],
-        userHostReasons: []
+        userHostReasons: [],
+        remoteBlobDownloads: []
     };
     const vaultListeners = new Set();
     /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
@@ -189,6 +214,8 @@ export function createFakePluginApi(options = {}) {
     const trashedFolders = new Set();
     const files = [];
     let createdFolders = 0;
+    const localBlobs = new Map(Object.entries(options.blobs ?? {}));
+    const remoteOnlyBlobs = new Map(Object.entries(options.remoteBlobs ?? {}));
     const notImplemented = (what) => {
         throw new Error(`createFakePluginApi: «${what}» no está en el host falso.`);
     };
@@ -198,10 +225,218 @@ export function createFakePluginApi(options = {}) {
         : pattern === host);
     let isoDates = options.isoDates ?? false;
     const isoListeners = new Set();
+    // ---- Vistas `'main'` (1.3): lo que Hebra hace con la pantalla principal ----
+    const viewTitles = new Map();
+    const mainViews = new Map();
+    /** La vista que «ocupa la pantalla principal» y la sección que enseña. */
+    let openMain = null;
+    /** La vista que el plugin acaba de desregistrar con la pantalla principal abierta: si
+     *  registra el MISMO id en el mismo turno síncrono, Hebra la sigue enseñando (el cambio
+     *  en caliente); con cualquier espera por medio, el modo ya se cerró. */
+    let reopenMain = null;
+    const callSafely = (fn) => {
+        try {
+            fn?.();
+        }
+        catch {
+            // Hebra lo anota con el id del plugin y sigue; el host falso solo sigue.
+        }
+    };
+    const unmountSection = (main, sectionId) => {
+        const mounted = main.mounted.get(sectionId);
+        if (!mounted)
+            return;
+        main.mounted.delete(sectionId);
+        callSafely(() => mounted.handle.unmount?.());
+        mounted.el.remove();
+    };
+    const setSectionVisible = (mounted, visible) => {
+        if (mounted.visible === visible)
+            return;
+        mounted.visible = visible;
+        // El orden de Hebra: «oculta» antes de ocultar; «visible» después de enseñar.
+        if (visible)
+            mounted.el.hidden = false;
+        callSafely(() => mounted.handle.onVisibilityChange?.(visible));
+        if (!visible)
+            mounted.el.hidden = true;
+    };
+    /** El envoltorio de las secciones, como el de Hebra, colgado del documento: `el` está
+     *  conectado cuando `mountSection` lo recibe. */
+    const sectionContainer = (main) => {
+        if (main.container?.isConnected)
+            return main.container;
+        const container = document.createElement('div');
+        container.className = 'hebra-module-view hebra-module-view-main';
+        container.dataset.moduleView = main.definition.id;
+        (document.body ?? document.documentElement).append(container);
+        main.container = container;
+        return container;
+    };
+    /** Sin nada montado, el envoltorio no se queda en el documento del test. */
+    const dropEmptyContainer = (main) => {
+        if (main.mounted.size > 0)
+            return;
+        main.container?.remove();
+        main.container = null;
+    };
+    // Como en Hebra, lo que el plugin pide desde dentro de `mountSection`, de una limpieza o
+    // de un aviso de visibilidad no se atiende a medias: se guarda lo último pedido y se
+    // aplica al terminar.
+    let servingMain = false;
+    let queuedMain = null;
+    const serveMain = (request) => {
+        if (servingMain) {
+            queuedMain = request;
+            return;
+        }
+        servingMain = true;
+        try {
+            // Si la primera lanza, lo que el plugin pidió desde dentro antes de lanzar se
+            // atiende igual (como en Hebra) y el fallo sube después.
+            let firstFault = null;
+            try {
+                request();
+            }
+            catch (error) {
+                firstFault = { error };
+            }
+            for (let served = 0; queuedMain && served < MAX_CHAINED_SECTION_REQUESTS; served += 1) {
+                const next = queuedMain;
+                queuedMain = null;
+                // El fallo de una petición encadenada no es de quien hizo la primera.
+                callSafely(next);
+            }
+            if (firstFault)
+                throw firstFault.error;
+        }
+        finally {
+            servingMain = false;
+            queuedMain = null;
+        }
+    };
+    const leaveMainNow = () => {
+        reopenMain = null;
+        if (!openMain)
+            return;
+        const main = mainViews.get(openMain.viewId);
+        openMain = null;
+        if (!main)
+            return;
+        for (const [sectionId, mounted] of [...main.mounted]) {
+            // Un aviso o una limpieza del plugin pudo desregistrar la vista: ya está desmontada.
+            if (mainViews.get(main.definition.id) !== main)
+                return;
+            if (main.mounted.get(sectionId) !== mounted)
+                continue;
+            if (main.definition.retainSections)
+                setSectionVisible(mounted, false);
+            else
+                unmountSection(main, sectionId);
+        }
+        dropEmptyContainer(main);
+    };
+    const showSectionNow = (viewId, wanted) => {
+        const main = mainViews.get(viewId);
+        if (!main)
+            throw new Error(`createFakePluginApi: «${viewId}» no es una vista 'main'.`);
+        const gone = () => mainViews.get(viewId) !== main;
+        reopenMain = null;
+        if (openMain && openMain.viewId !== viewId)
+            leaveMainNow();
+        if (gone())
+            return null;
+        // La pedida si existe; si no, la que ya se ve (la vista está abierta); si no, la
+        // última elegida («recordada») o la primera.
+        const visible = openMain?.viewId === viewId ? openMain.sectionId : undefined;
+        const sectionId = [wanted, visible, main.remembered].find((id) => id !== undefined && main.sections.some((section) => section.id === id)) ?? main.sections[0].id;
+        if (wanted === sectionId)
+            main.remembered = sectionId;
+        openMain = { viewId, sectionId };
+        for (const [otherId, other] of [...main.mounted]) {
+            if (otherId === sectionId)
+                continue;
+            if (gone())
+                return null;
+            if (main.mounted.get(otherId) !== other)
+                continue;
+            if (main.definition.retainSections)
+                setSectionVisible(other, false);
+            else
+                unmountSection(main, otherId);
+        }
+        if (gone())
+            return null;
+        const current = main.mounted.get(sectionId);
+        if (current) {
+            setSectionVisible(current, true);
+            return current.el;
+        }
+        const el = document.createElement('div');
+        el.className = 'hebra-module-view-content hebra-module-view-main-content';
+        el.dataset.section = sectionId;
+        sectionContainer(main).append(el);
+        let result;
+        try {
+            // Un `mountSection` que lanza sube tal cual: en Hebra la columna enseñaría el error.
+            result = main.definition.mountSection(el, sectionId);
+        }
+        catch (error) {
+            el.remove();
+            if (!gone())
+                dropEmptyContainer(main);
+            throw error;
+        }
+        const handle = typeof result === 'function' ? { unmount: result } : (result ?? {});
+        if (gone()) {
+            // `mountSection` desregistró su propia vista: lo recién montado se deshace.
+            callSafely(() => handle.unmount?.());
+            el.remove();
+            dropEmptyContainer(main);
+            return el;
+        }
+        main.mounted.set(sectionId, { el, handle, visible: true });
+        return el;
+    };
+    /** `open` y `select`: síncronas, con el `el` de vuelta; no valen desde dentro. */
+    const showSection = (viewId, wanted) => {
+        if (!mainViews.has(viewId)) {
+            throw new Error(`createFakePluginApi: «${viewId}» no es una vista 'main'.`);
+        }
+        if (servingMain) {
+            throw new Error('createFakePluginApi: mainView.open y mainView.select no se pueden llamar desde ' +
+                'dentro de mountSection, unmount u onVisibilityChange; ahí el plugin pide otra ' +
+                'sección con api.ui.revealView.');
+        }
+        const shown = { el: null };
+        serveMain(() => {
+            shown.el = showSectionNow(viewId, wanted);
+        });
+        // Como en Hebra, que el plugin desregistre su vista a mitad de abrirla no es un error.
+        // Si ni siquiera llegó a montarse nada, el `el` que se devuelve (el tipo no admite
+        // `null`) es uno vacío y ya fuera del documento.
+        return shown.el ?? document.createElement('div');
+    };
+    const mainView = {
+        open: (viewId, sectionId) => showSection(viewId, sectionId),
+        select(sectionId) {
+            if (!openMain)
+                throw new Error('createFakePluginApi: no hay ninguna vista «main» abierta.');
+            const main = mainViews.get(openMain.viewId);
+            main.remembered = sectionId;
+            return showSection(openMain.viewId, sectionId);
+        },
+        leave: () => serveMain(leaveMainNow),
+        current: () => (openMain ? { ...openMain } : null),
+        mounted: (viewId) => [...(mainViews.get(viewId)?.mounted.keys() ?? [])],
+        sections: (viewId) => (mainViews.get(viewId)?.sections ?? []).map((section) => ({ ...section }))
+    };
     const api = {
         apiVersion: PLUGIN_API_VERSION,
         plugin: { id: pluginId, version: options.version ?? '0.0.0' },
-        has: (capability) => declared.has(capability) && available(capability, platform),
+        has: (capability) => PLUGIN_HOST_FEATURES.includes(capability) ||
+            (declared.has(capability) &&
+                available(capability, platform)),
         env: {
             platform,
             isDesktopApp: DESKTOP.includes(platform),
@@ -218,8 +453,104 @@ export function createFakePluginApi(options = {}) {
             }
         },
         ui: {
-            registerView: (view) => (recorded.views.push(view), remover(recorded.views, view)),
-            revealView: () => { },
+            registerView: (view) => {
+                if (view.placement === 'main') {
+                    const problem = mainSectionsProblem(view);
+                    if (problem)
+                        throw new FakePluginApiError('invalid-argument', problem);
+                    mainViews.set(view.id, {
+                        definition: view,
+                        sections: view.sections.map((section) => ({ ...section })),
+                        mounted: new Map(),
+                        container: null
+                    });
+                    viewTitles.set(view.id, view.title);
+                    recorded.mainViews.push(view);
+                    if (reopenMain?.viewId === view.id && typeof document !== 'undefined') {
+                        // Cambio en caliente: la pantalla principal sigue abierta y se vuelve a montar
+                        // la sección que se veía (o la que resuelva el nuevo registro, si ya no existe).
+                        openMain = reopenMain;
+                        reopenMain = null;
+                        // Un `mountSection` que lanza no es un fallo de `registerView`: en Hebra lo
+                        // enseña la columna.
+                        serveMain(() => callSafely(() => void showSectionNow(view.id)));
+                    }
+                    const removeMain = remover(recorded.mainViews, view);
+                    return () => {
+                        if (recorded.mainViews.includes(view))
+                            viewTitles.delete(view.id);
+                        removeMain();
+                        // Como Hebra: la vista sale del registro y DESPUÉS se desmontan TODAS sus
+                        // secciones, también las retenidas.
+                        const main = mainViews.get(view.id);
+                        if (main?.definition !== view)
+                            return;
+                        mainViews.delete(view.id);
+                        if (openMain?.viewId === view.id) {
+                            const wasOpen = openMain;
+                            openMain = null;
+                            reopenMain = wasOpen;
+                            queueMicrotask(() => {
+                                if (reopenMain === wasOpen)
+                                    reopenMain = null;
+                            });
+                        }
+                        for (const sectionId of [...main.mounted.keys()])
+                            unmountSection(main, sectionId);
+                        dropEmptyContainer(main);
+                    };
+                }
+                viewTitles.set(view.id, view.title);
+                recorded.views.push(view);
+                const remove = remover(recorded.views, view);
+                return () => {
+                    if (recorded.views.includes(view))
+                        viewTitles.delete(view.id);
+                    remove();
+                };
+            },
+            revealView: (id, options) => {
+                recorded.reveals.push({ id, section: options?.section });
+                // Una vista `'main'` entra en la pantalla principal, como en Hebra (hace falta DOM).
+                // Desde dentro de `mountSection` o de un aviso, se aplica al terminar lo que
+                // estaba a medias (`serveMain`).
+                if (mainViews.has(id) && typeof document !== 'undefined') {
+                    serveMain(() => void showSectionNow(id, options?.section));
+                }
+                else if (typeof document !== 'undefined' &&
+                    recorded.views.some((view) => view.id === id && view.placement !== 'dialog')) {
+                    // Una vista de columna con una «main» abierta: Hebra sale a las notas (sin
+                    // `retainSections` se desmonta; con ella, se oculta). Una de diálogo no la toca.
+                    serveMain(leaveMainNow);
+                }
+            },
+            updateView: (id, patch) => {
+                if (patch.title !== undefined && patch.title.trim() === '') {
+                    throw new FakePluginApiError('invalid-argument', '`title` no puede quedar vacío.');
+                }
+                if (viewTitles.has(id) && patch.title !== undefined)
+                    viewTitles.set(id, patch.title);
+            },
+            updateViewSection: (viewId, sectionId, patch) => {
+                if (patch.title !== undefined && patch.title.trim() === '') {
+                    throw new FakePluginApiError('invalid-argument', '`title` no puede quedar vacío.');
+                }
+                const section = mainViews.get(viewId)?.sections.find((entry) => entry.id === sectionId);
+                if (!section)
+                    return;
+                if (patch.title !== undefined)
+                    section.title = patch.title;
+                if (patch.icon === null)
+                    delete section.icon;
+                else if (patch.icon !== undefined)
+                    section.icon = patch.icon;
+                if (patch.subtitle === null)
+                    delete section.subtitle;
+                else if (patch.subtitle !== undefined)
+                    section.subtitle = patch.subtitle;
+                if (patch.badge !== undefined)
+                    section.badge = patch.badge;
+            },
             registerCommand: (command) => (recorded.commands.push(command),
                 remover(recorded.commands, command)),
             ribbon: (item) => (recorded.ribbon.push(item), remover(recorded.ribbon, item)),
@@ -335,11 +666,16 @@ export function createFakePluginApi(options = {}) {
                 requireCapability('vault.write');
                 const written = [];
                 const stale = [];
+                const missing = [];
                 const committed = [];
                 for (const entry of entries) {
                     const current = notes.get(entry.id);
-                    if (!current ||
-                        current.locked ||
+                    if (!current) {
+                        missing.push(entry.id);
+                        stale.push(entry.id);
+                        continue;
+                    }
+                    if (current.locked ||
                         current.trashedAt !== null ||
                         (entry.strictRevision
                             ? !sameRevision(current.revision, entry.expected)
@@ -352,7 +688,7 @@ export function createFakePluginApi(options = {}) {
                     written.push(entry.id);
                     committed.push({ id: entry.id, body: saved.body, revision: { ...saved.revision } });
                 }
-                return { written, stale, committed };
+                return { written, stale, ...(missing.length > 0 ? { missing } : {}), committed };
             },
             async noteMove(id, folderId) {
                 requireCapability('vault.write');
@@ -538,7 +874,19 @@ export function createFakePluginApi(options = {}) {
             },
             fileReplace: async () => notImplemented('vault.fileReplace'),
             fileTrash: async () => notImplemented('vault.fileTrash'),
-            blobRead: async () => notImplemented('vault.blobRead'),
+            async blobRead(sha256) {
+                requireCapability('vault.read');
+                let bytes = localBlobs.get(sha256);
+                const remote = remoteOnlyBlobs.get(sha256);
+                if (!bytes && remote) {
+                    // La bajada bajo demanda: el relé entrega y el dispositivo ya lo tiene.
+                    localBlobs.set(sha256, remote);
+                    remoteOnlyBlobs.delete(sha256);
+                    recorded.remoteBlobDownloads.push(sha256);
+                    bytes = remote;
+                }
+                return bytes ? new Uint8Array(bytes) : null;
+            },
             blobPut: async () => notImplemented('vault.blobPut'),
             onChange(listener) {
                 requireCapability('vault.read');
@@ -687,6 +1035,8 @@ export function createFakePluginApi(options = {}) {
             isoDates = on;
             for (const listener of [...isoListeners])
                 listener(on);
-        }
+        },
+        viewTitle: (id) => viewTitles.get(id) ?? null,
+        mainView
     };
 }

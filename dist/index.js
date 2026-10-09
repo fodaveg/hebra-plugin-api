@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**
@@ -21,6 +21,17 @@ export const PLUGIN_CAPABILITIES = [
     'notify.system',
     'background'
 ];
+/**
+ * Desde la 1.3. Lo que el ANFITRIÓN sabe hacer, que también se pregunta con `api.has()`.
+ * No son permisos: no se declaran en `hebra.json` (un Hebra anterior daría por incompatible
+ * un plugin que las pusiera en `capabilities.required`) y no salen en la hoja de
+ * consentimiento. Un Hebra que no conoce un nombre responde `false` sin lanzar, así que
+ * `api.has('ui.view.main')` es la forma de degradar sin comparar versiones.
+ *
+ * - `ui.view.main`: `placement: 'main'`, `ui.updateView`, `ui.updateViewSection` y la
+ *   opción `section` de `ui.revealView` (`PluginMainViewDefinition`).
+ */
+export const PLUGIN_HOST_FEATURES = ['ui.view.main'];
 // ---- Errores ----
 /**
  * Códigos con los que rechaza (o lanza) la API. Un plugin los distingue con
