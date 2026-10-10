@@ -134,6 +134,21 @@ function bodyHash(body) {
 function sameRevision(a, b) {
     return a.localSeq === b.localSeq && a.bodySha256 === b.bodySha256;
 }
+/**
+ * Una `HebraPluginApi` en memoria para probar un plugin sin Hebra.
+ *
+ * Registros duplicados, como el registro de Hebra (`host-ui.ts`): `ui.registerView` (una
+ * vista `'column'`, `'dialog'` o `'main'` con el id de otra que sigue registrada, sea de
+ * la colocación que sea), `ui.registerCommand`, `ui.registerStatusBarItem` y
+ * `editor.registerCodeBlock` (el lenguaje se compara recortado y en minúsculas) LANZAN un
+ * `Error` si el id sigue registrado; el mensaje es el de Hebra con el prefijo
+ * `createFakePluginApi: `. Tras desregistrar, el id vuelve a valer. `ui.ribbon`,
+ * `ui.ribbonItem`, `ui.settingsPanel` y `editor.registerExtension` no tienen id y
+ * admiten repetidos, igual que en Hebra.
+ *
+ * Diferencia que queda: Hebra comparte los ids entre todos los plugins (el de otro
+ * plugin también choca); el host falso solo conoce al plugin que se prueba.
+ */
 export function createFakePluginApi(options = {}) {
     const platform = options.platform ?? 'macos';
     const pluginId = options.id ?? 'plugin-de-prueba';
@@ -454,6 +469,11 @@ export function createFakePluginApi(options = {}) {
         },
         ui: {
             registerView: (view) => {
+                // Como `registerView` de Hebra: un id registrado, de la colocación que sea, no se
+                // puede registrar otra vez hasta que se desregistre.
+                if (mainViews.has(view.id) || recorded.views.some((entry) => entry.id === view.id)) {
+                    throw new Error(`createFakePluginApi: Ya hay una vista de módulo registrada con el id «${view.id}».`);
+                }
                 if (view.placement === 'main') {
                     const problem = mainSectionsProblem(view);
                     if (problem)
@@ -551,8 +571,13 @@ export function createFakePluginApi(options = {}) {
                 if (patch.badge !== undefined)
                     section.badge = patch.badge;
             },
-            registerCommand: (command) => (recorded.commands.push(command),
-                remover(recorded.commands, command)),
+            registerCommand: (command) => {
+                if (recorded.commands.some((entry) => entry.id === command.id)) {
+                    throw new Error(`createFakePluginApi: Ya hay un comando de módulo registrado con el id «${command.id}».`);
+                }
+                recorded.commands.push(command);
+                return remover(recorded.commands, command);
+            },
             ribbon: (item) => (recorded.ribbon.push(item), remover(recorded.ribbon, item)),
             ribbonItem: (item) => {
                 recorded.ribbon.push(item);
@@ -570,6 +595,9 @@ export function createFakePluginApi(options = {}) {
             openMenu: () => { },
             openSettings: () => { },
             registerStatusBarItem: (item) => {
+                if (recorded.statusBarItems.some((entry) => entry.id === item.id)) {
+                    throw new Error(`createFakePluginApi: Ya hay una pieza de la barra de estado registrada con el id «${item.id}».`);
+                }
                 recorded.statusBarItems.push(item);
                 return {
                     update: (patch) => void Object.assign(item, patch),
@@ -591,6 +619,13 @@ export function createFakePluginApi(options = {}) {
             },
             registerCodeBlock(language, render) {
                 requireCapability('editor');
+                // Como Hebra: el lenguaje se compara recortado y en minúsculas.
+                const key = language.trim().toLocaleLowerCase('en-US');
+                for (const taken of recorded.codeBlocks.keys()) {
+                    if (taken.trim().toLocaleLowerCase('en-US') === key) {
+                        throw new Error(`createFakePluginApi: Ya hay un bloque de módulo registrado para el lenguaje «${key}».`);
+                    }
+                }
                 recorded.codeBlocks.set(language, render);
                 return () => void recorded.codeBlocks.delete(language);
             }

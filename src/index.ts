@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.3.0';
+export const PLUGIN_API_VERSION = '1.4.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -54,8 +54,16 @@ export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
  *
  * - `ui.view.main`: `placement: 'main'`, `ui.updateView`, `ui.updateViewSection` y la
  *   opción `section` de `ui.revealView` (`PluginMainViewDefinition`).
+ * - `markdown.image.remote` (desde la 1.4): una imagen Markdown con destino `https`,
+ *   `![alt](https://…)`, se pinta EN LÍNEA en la nota, también en una línea de lista y en
+ *   una celda de tabla. Tamaño con la sintaxis de Obsidian, `![alt|24](…)` (ancho en px)
+ *   o `![alt|24x24](…)`; dentro de una tabla la barra va escapada, `![alt\|24](…)`. Un
+ *   Hebra anterior enseña el texto alternativo (con el `|24` a la vista) en vez de la
+ *   imagen, así que un plugin que escribe iconos en las notas pregunta antes. El usuario
+ *   puede apagar la carga («Cargar imágenes remotas»): `has()` sigue dando `true` y la
+ *   nota enseña el alternativo, ya sin el `|24`.
  */
-export const PLUGIN_HOST_FEATURES = ['ui.view.main'] as const;
+export const PLUGIN_HOST_FEATURES = ['ui.view.main', 'markdown.image.remote'] as const;
 export type PluginHostFeature = (typeof PLUGIN_HOST_FEATURES)[number];
 
 // ---- Errores ----
@@ -978,7 +986,7 @@ export interface PluginEnv {
 // ---- La API ----
 
 export interface HebraPluginApi {
-  /** La que implementa Hebra, p. ej. `'1.3.0'`. Con ella un plugin decide si puede usar
+  /** La que implementa Hebra, p. ej. `'1.4.0'`. Con ella un plugin decide si puede usar
    *  algo añadido en una versión menor (p. ej. `placement: 'main'`, desde la 1.3). */
   readonly apiVersion: string;
   readonly plugin: { readonly id: string; readonly version: string };

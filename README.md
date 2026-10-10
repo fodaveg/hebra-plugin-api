@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra, versión `1.3.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra, versión `1.4.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0`.
 
@@ -144,9 +144,37 @@ if (api.has('ui.view.main')) {
 - Un botón de `ribbon` con el `viewId` de una vista `'main'` refleja `aria-pressed` mientras está abierta; el clic llama siempre a `onClick`.
 - Host falso: `fake.mainView.open(id, section?)`, `select(section)`, `leave()`, `current()`, `mounted(id)` y `sections(id)`; `fake.viewTitle(id)`; `recorded.reveals` y `recorded.mainViews` (las vistas `'main'` no van en `recorded.views`, que sigue siendo solo de `'column'` y `'dialog'`). Necesita `document` (jsdom o happy-dom). Monta en síncrono dentro de `revealView`, `open` y `select`, y un `mountSection` que lanza sube por ahí; Hebra monta después y no lanza. El cambio en caliente (desregistrar y registrar el mismo id con la vista abierta) lo da por «en el mismo momento» si es el mismo turno síncrono; Hebra, si es el mismo pintado (JSDoc de `FakePluginApi.mainView`).
 
+## Novedades de la 1.4: imágenes remotas en línea
+
+Solo se añade. Una imagen Markdown con destino `https` se pinta dentro de su línea en la nota: en un párrafo, en una línea de lista y en una celda de tabla. Es Markdown normal, lo escribe el plugin en la nota con `vault.write`; no hay ningún método nuevo.
+
+```ts
+// Un Hebra anterior enseñaría «Espada|20» en vez del icono: ahí no se escribe.
+const icons = api.has('markdown.image.remote');
+const icon = (name: string, url: string, inTable = false) =>
+  icons ? `![${name}${inTable ? '\\|20' : '|20'}](${url})` : '';
+
+const line = `- ${icon('Espada', 'https://render.guildwars2.com/file/….png')} Espada`;
+const row = `| Espada | ${icon('Espada', 'https://render.guildwars2.com/file/….png', true)} |`;
+```
+
+- `api.has('markdown.image.remote')` es una función del anfitrión, no un permiso: no la declares en `hebra.json` ni pidas `http` ni `network.hosts` por ella (la imagen la pide la nota, no el plugin). En un Hebra anterior da `false` y la misma línea enseña el texto alternativo con el `|20` a la vista, así que pregunta antes de escribirla.
+- Solo `https:`, de cualquier servidor. `http:`, `data:` y `blob:` no se cargan: se ve el texto alternativo.
+- Tamaño, con la sintaxis de Obsidian, al final del texto alternativo: `![alt|24](url)` es el ancho en px y `![alt|24x24](url)` ancho y alto. Enteros de 1 a 4096; cualquier otra cosa tras la barra es texto alternativo (`![a|b](url)` → «a|b»). Sin tamaño, la imagen va a su tamaño natural sin pasar del ancho de la línea.
+- En una celda de tabla la barra va ESCAPADA, `![alt\|24](url)`: sin la barra invertida parte la celda en dos. Fuera de una tabla valen las dos formas.
+- Para un icono dentro de una línea de texto, declara un lado de hasta 24 px (`|20` o `|20x20`): la línea mide lo mismo que sus vecinas sin icono, antes y después de cargar. Por encima de 24 px, o sin tamaño, la línea crece lo que pida la imagen. Con `|N` solo, el alto sigue la proporción de la imagen: si no es cuadrada, declara `|NxM`.
+- El `|24` no es texto: no sale en el extracto de la lista, en la búsqueda, en el índice ni en las copias.
+- Respaldo: si la imagen no carga (404, sin red) queda su texto alternativo, o «Imagen» si está vacío. Pon siempre un alternativo que se entienda solo.
+- Con el cursor tocando la imagen se ve su Markdown; en la vista «Código fuente» no se pide ninguna imagen.
+- El usuario puede apagar «Cargar imágenes remotas» en Ajustes: entonces la nota enseña el texto alternativo y `api.has('markdown.image.remote')` sigue dando `true` (dice lo que Hebra sabe hacer, no lo que el usuario ha elegido).
+- La petición la hace el motor web directamente al servidor de la imagen, sin `Referer` y sin los parámetros de rastreo de la URL (`utm_*`, `fbclid`, `gclid`…, que la nota conserva). Hebra no la descarga ni la guarda como adjunto, así que sin red no se ve.
+- Host falso: `fake.api.has('markdown.image.remote')` da `true`.
+
 ## Host falso
 
 `createFakePluginApi()` imita lo que un plugin decide con ello: revisiones de nota (una `noteSave` con revisión vieja guarda una copia de conflicto y devuelve `redirected`; `notesRewriteBatch` devuelve en `stale` las de revisión vieja o que no existen, y además en `missing` las que no existen: no merece reintentarlas), la regla del título, los hosts del usuario (`confirmUserHost`, `revokeUserHost`) las fechas ISO (`setIsoDates`) y `vault.blobRead`: devuelve los bytes de un blob sembrado con `blobs: { [sha256]: bytes }` o `null` si no está, y con `remoteBlobs: { [sha256]: bytes }` siembra blobs «solo remotos» que la primera lectura «baja» (queda anotado en `recorded.remoteBlobDownloads`) para probar la bajada bajo demanda.
+
+Como el registro de Hebra, lanza si el id sigue registrado en `ui.registerView` (también entre colocaciones `'column'`, `'dialog'` y `'main'`), `ui.registerCommand`, `ui.registerStatusBarItem` y `editor.registerCodeBlock` (el lenguaje se compara recortado y en minúsculas); tras desregistrar, el id vuelve a valer. `ribbon`, `ribbonItem`, `settingsPanel` y `registerExtension` admiten repetidos, como en Hebra. Diferencia: Hebra comparte los ids entre plugins; el falso solo conoce al que pruebas.
 
 Los métodos `noteTrashIfUnchanged` y `noteMoveIfUnchanged` reciben la revisión y carpeta observadas; `noteRestoreIfUnchanged`, la revisión y fecha de papelera. Devuelven la nota confirmada o `null` sin efectos si cambió o está protegida. `folderRenameIfUnchanged` y `folderMoveIfUnchanged` comparan nombre y padre y devuelven la carpeta confirmada o `null`. Todos requieren `vault.write`. `noteRestore` conserva su resultado booleano.
 
