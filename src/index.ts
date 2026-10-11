@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.4.0';
+export const PLUGIN_API_VERSION = '1.5.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -62,8 +62,25 @@ export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
  *   imagen, así que un plugin que escribe iconos en las notas pregunta antes. El usuario
  *   puede apagar la carga («Cargar imágenes remotas»): `has()` sigue dando `true` y la
  *   nota enseña el alternativo, ya sin el `|24`.
+ * - `notify.urgency` (desde la 1.5): este Hebra ACEPTA `urgency` y `silent` en
+ *   `notify.system` (`PluginSystemNotifyInput`). Dice que los campos se leen, no que
+ *   tengan efecto en cada plataforma (ver el JSDoc de `urgency` y `silent`); un Hebra
+ *   anterior los ignora sin fallar.
+ * - `instance.lock` (desde la 1.5): este Hebra GARANTIZA un único proceso sobre la misma
+ *   biblioteca, con un candado de instancia que cruza procesos. Es la ÚNICA función del
+ *   anfitrión que depende de la plataforma: hoy `true` solo en Linux de escritorio
+ *   (`flock` sobre `instancia.lock` en el directorio de datos); `false` en macOS, iOS,
+ *   Windows, Android y la web. Sirve a un plugin que coordina trabajo entre procesos y no
+ *   puede fiarse de los Web Locks de WebKitGTK (no cruzan procesos). `false` NO dice que
+ *   haya dos procesos, dice que Hebra no lo garantiza aquí. Un Hebra anterior a la 1.5
+ *   no conoce el nombre y también responde `false`: es un falso negativo conservador.
  */
-export const PLUGIN_HOST_FEATURES = ['ui.view.main', 'markdown.image.remote'] as const;
+export const PLUGIN_HOST_FEATURES = [
+  'ui.view.main',
+  'markdown.image.remote',
+  'notify.urgency',
+  'instance.lock'
+] as const;
 export type PluginHostFeature = (typeof PLUGIN_HOST_FEATURES)[number];
 
 // ---- Errores ----
@@ -939,9 +956,34 @@ export interface PluginTcp {
 
 export type PluginSystemNotificationOutcome = 'shown' | 'denied' | 'unavailable' | 'pending';
 
+/** Lo que pide un aviso del sistema (`notify.system`). */
+export interface PluginSystemNotifyInput {
+  /** Texto plano, hasta 256 caracteres (el resto se recorta). */
+  title: string;
+  /** Texto plano, hasta 4096 caracteres (el resto se recorta). */
+  body: string;
+  /**
+   * Desde la 1.5. `'critical'` pide que el aviso salte lo que oculta los normales (p. ej.
+   * GNOME con una ventana a pantalla completa). Sin indicar, o `'normal'`, es un aviso
+   * corriente. Es una PETICIÓN: el sistema decide y un Hebra anterior la ignora.
+   * En Linux funciona (`Urgency::Critical`); en macOS e iOS `critical` no atraviesa el modo
+   * concentración sin un entitlement que Hebra no tiene, y en Windows se ignora.
+   * `api.has('notify.urgency')` solo dice que el campo se lee, no que tenga efecto.
+   */
+  urgency?: 'normal' | 'critical';
+  /**
+   * Desde la 1.5. `true` pide un aviso sin el sonido del sistema (el plugin toca el suyo).
+   * POR DEFECTO, SIN SONIDO: si no lo indicas, Hebra pide `silent: true`, como antes de la
+   * 1.5; para el sonido del sistema pasa `silent: false` expresamente. Es una
+   * PETICIÓN: un Hebra anterior la ignora y en Linux funciona (hint
+   * `suppress-sound`) y en el resto de escritorio la plataforma decide.
+   */
+  silent?: boolean;
+}
+
 export interface PluginNotify {
   /** Aviso del SISTEMA (escritorio). `pending`: se pidió permiso y saldrá si se concede. */
-  system(input: { title: string; body: string }): PluginSystemNotificationOutcome;
+  system(input: PluginSystemNotifyInput): PluginSystemNotificationOutcome;
 }
 
 /** Mantener la app viva en segundo plano (efectivo en macOS; sin efecto en el resto). */
@@ -986,7 +1028,7 @@ export interface PluginEnv {
 // ---- La API ----
 
 export interface HebraPluginApi {
-  /** La que implementa Hebra, p. ej. `'1.4.0'`. Con ella un plugin decide si puede usar
+  /** La que implementa Hebra, p. ej. `'1.5.0'`. Con ella un plugin decide si puede usar
    *  algo añadido en una versión menor (p. ej. `placement: 'main'`, desde la 1.3). */
   readonly apiVersion: string;
   readonly plugin: { readonly id: string; readonly version: string };

@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.4.0';
+export const PLUGIN_API_VERSION = '1.5.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**
@@ -38,8 +38,25 @@ export const PLUGIN_CAPABILITIES = [
  *   imagen, así que un plugin que escribe iconos en las notas pregunta antes. El usuario
  *   puede apagar la carga («Cargar imágenes remotas»): `has()` sigue dando `true` y la
  *   nota enseña el alternativo, ya sin el `|24`.
+ * - `notify.urgency` (desde la 1.5): este Hebra ACEPTA `urgency` y `silent` en
+ *   `notify.system` (`PluginSystemNotifyInput`). Dice que los campos se leen, no que
+ *   tengan efecto en cada plataforma (ver el JSDoc de `urgency` y `silent`); un Hebra
+ *   anterior los ignora sin fallar.
+ * - `instance.lock` (desde la 1.5): este Hebra GARANTIZA un único proceso sobre la misma
+ *   biblioteca, con un candado de instancia que cruza procesos. Es la ÚNICA función del
+ *   anfitrión que depende de la plataforma: hoy `true` solo en Linux de escritorio
+ *   (`flock` sobre `instancia.lock` en el directorio de datos); `false` en macOS, iOS,
+ *   Windows, Android y la web. Sirve a un plugin que coordina trabajo entre procesos y no
+ *   puede fiarse de los Web Locks de WebKitGTK (no cruzan procesos). `false` NO dice que
+ *   haya dos procesos, dice que Hebra no lo garantiza aquí. Un Hebra anterior a la 1.5
+ *   no conoce el nombre y también responde `false`: es un falso negativo conservador.
  */
-export const PLUGIN_HOST_FEATURES = ['ui.view.main', 'markdown.image.remote'];
+export const PLUGIN_HOST_FEATURES = [
+    'ui.view.main',
+    'markdown.image.remote',
+    'notify.urgency',
+    'instance.lock'
+];
 // ---- Errores ----
 /**
  * Códigos con los que rechaza (o lanza) la API. Un plugin los distingue con

@@ -44,6 +44,11 @@ function available(capability, platform) {
         return platform !== 'web';
     return true;
 }
+/** Las funciones del anfitrión valen en todas las plataformas salvo `instance.lock`, que
+ *  solo da el candado de instancia de Linux de escritorio (como `capabilities.ts` de Hebra). */
+function hostFeatureAvailable(feature, platform) {
+    return feature === 'instance.lock' ? platform === 'linux' : true;
+}
 function remover(list, item) {
     return () => {
         const index = list.indexOf(item);
@@ -175,7 +180,8 @@ export function createFakePluginApi(options = {}) {
         httpRequests: [],
         userHostPrompts: [],
         userHostReasons: [],
-        remoteBlobDownloads: []
+        remoteBlobDownloads: [],
+        systemNotifications: []
     };
     const vaultListeners = new Set();
     /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
@@ -449,7 +455,8 @@ export function createFakePluginApi(options = {}) {
     const api = {
         apiVersion: PLUGIN_API_VERSION,
         plugin: { id: pluginId, version: options.version ?? '0.0.0' },
-        has: (capability) => PLUGIN_HOST_FEATURES.includes(capability) ||
+        has: (capability) => (PLUGIN_HOST_FEATURES.includes(capability) &&
+            hostFeatureAvailable(capability, platform)) ||
             (declared.has(capability) &&
                 available(capability, platform)),
         env: {
@@ -1042,7 +1049,17 @@ export function createFakePluginApi(options = {}) {
             close: async () => requireCapability('tcp')
         },
         notify: {
-            system: () => (requireCapability('notify.system'), 'shown')
+            system: (input) => {
+                requireCapability('notify.system');
+                // Copia solo lo conocido: un campo de más no debe colarse como si Hebra lo leyera.
+                recorded.systemNotifications.push({
+                    title: input.title,
+                    body: input.body,
+                    urgency: input.urgency,
+                    silent: input.silent
+                });
+                return 'shown';
+            }
         },
         background: {
             hold: async () => requireCapability('background'),

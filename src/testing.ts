@@ -27,6 +27,8 @@ import {
   type HebraPluginApi,
   type PluginApiErrorCode,
   type PluginCapability,
+  type PluginHostFeature,
+  type PluginSystemNotifyInput,
   type PluginCodeBlockRenderer,
   type PluginCommandDefinition,
   type PluginFolder,
@@ -117,6 +119,9 @@ export interface FakePluginApi {
     userHostReasons: string[];
     /** Hashes de `remoteBlobs` que `vault.blobRead` bajó, en orden (uno por blob). */
     remoteBlobDownloads: string[];
+    /** Cada `notify.system` aceptado (1.5), en orden, con `urgency` y `silent` tal como
+     *  los pasó el plugin (`undefined` si no los indicó). */
+    systemNotifications: PluginSystemNotifyInput[];
   };
   /** Dispara un cambio de la biblioteca a los `vault.onChange`. */
   emitVaultChange(change: PluginVaultChange): void;
@@ -250,6 +255,12 @@ function available(capability: PluginCapability, platform: PluginPlatform): bool
   return true;
 }
 
+/** Las funciones del anfitrión valen en todas las plataformas salvo `instance.lock`, que
+ *  solo da el candado de instancia de Linux de escritorio (como `capabilities.ts` de Hebra). */
+function hostFeatureAvailable(feature: PluginHostFeature, platform: PluginPlatform): boolean {
+  return feature === 'instance.lock' ? platform === 'linux' : true;
+}
+
 function remover<T>(list: T[], item: T): PluginUnregister {
   return () => {
     const index = list.indexOf(item);
@@ -379,7 +390,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     httpRequests: [],
     userHostPrompts: [],
     userHostReasons: [],
-    remoteBlobDownloads: []
+    remoteBlobDownloads: [],
+    systemNotifications: []
   };
   const vaultListeners = new Set<(change: PluginVaultChange) => void>();
   /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
@@ -642,7 +654,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     apiVersion: PLUGIN_API_VERSION,
     plugin: { id: pluginId, version: options.version ?? '0.0.0' },
     has: (capability) =>
-      (PLUGIN_HOST_FEATURES as readonly string[]).includes(capability) ||
+      ((PLUGIN_HOST_FEATURES as readonly string[]).includes(capability) &&
+        hostFeatureAvailable(capability as PluginHostFeature, platform)) ||
       (declared.has(capability as PluginCapability) &&
         available(capability as PluginCapability, platform)),
     env: {
@@ -1253,7 +1266,17 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
       close: async () => requireCapability('tcp')
     },
     notify: {
-      system: () => (requireCapability('notify.system'), 'shown')
+      system: (input) => {
+        requireCapability('notify.system');
+        // Copia solo lo conocido: un campo de más no debe colarse como si Hebra lo leyera.
+        recorded.systemNotifications.push({
+          title: input.title,
+          body: input.body,
+          urgency: input.urgency,
+          silent: input.silent
+        });
+        return 'shown';
+      }
     },
     background: {
       hold: async () => requireCapability('background'),

@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra, versión `1.4.0` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra, versión `1.5.0` (sin publicar: la etiqueta la decide David) (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0`.
 
@@ -169,6 +169,41 @@ const row = `| Espada | ${icon('Espada', 'https://render.guildwars2.com/file/…
 - El usuario puede apagar «Cargar imágenes remotas» en Ajustes: entonces la nota enseña el texto alternativo y `api.has('markdown.image.remote')` sigue dando `true` (dice lo que Hebra sabe hacer, no lo que el usuario ha elegido).
 - La petición la hace el motor web directamente al servidor de la imagen, sin `Referer` y sin los parámetros de rastreo de la URL (`utm_*`, `fbclid`, `gclid`…, que la nota conserva). Hebra no la descarga ni la guarda como adjunto, así que sin red no se ve.
 - Host falso: `fake.api.has('markdown.image.remote')` da `true`.
+
+## Novedades de la 1.5: urgencia y silencio en `notify.system` (sin publicar)
+
+Solo se añade. `api.notify.system` admite dos campos opcionales; un Hebra anterior los ignora sin fallar.
+
+```ts
+api.notify.system({
+  title: 'Botín valioso',
+  body: 'Has conseguido algo',
+  urgency: 'critical', // 'normal' | 'critical'
+  silent: true //  el plugin toca su propio sonido
+});
+```
+
+- `urgency?: 'normal' | 'critical'`: pide que el aviso salte lo que oculta los normales (p. ej. GNOME con una ventana a pantalla completa). Es una petición, no una garantía.
+- `silent?: boolean`: `true` pide un aviso sin el sonido del sistema. Por defecto, sin sonido: si no lo indicas, Hebra pide `silent: true` (como antes de la 1.5); `silent: false` pide el sonido del sistema. Título y cuerpo son texto plano (se recortan a 256 y 4096 caracteres; en Linux se escapan `&`, `<` y `>`).
+- `api.has('notify.urgency')` es una función del anfitrión, no un permiso: no se declara en `hebra.json`. Da `true` si ESTE Hebra lee los dos campos; en un Hebra anterior da `false`. No dice que tengan efecto en tu plataforma.
+- Lo que hace cada plataforma: en **Linux funcionan los dos** (`critical` es `Urgency::Critical` y `silent` el hint `suppress-sound`, con un comando propio de Hebra sobre `notify-rust`, porque el plugin de notificaciones de Tauri no los expone). En macOS `critical` se ignora (saltar el modo concentración exige un entitlement que Hebra no tiene) y el aviso sale sin sonido propio; en Windows se ignoran los dos; iOS y Android no ofrecen `notify.system` hoy, y la web tampoco. Los valores que no son de la API se descartan.
+- Host falso: `fake.api.has('notify.urgency')` da `true` y `fake.recorded.systemNotifications` guarda cada aviso aceptado con su `urgency` y `silent` (`undefined` si no los indicó).
+
+### `api.has('instance.lock')`: ¿hay un único proceso sobre la biblioteca? (1.5, sin publicar)
+
+Función del anfitrión, no un permiso (no se declara en `hebra.json`). Da `true` solo donde Hebra GARANTIZA que no habrá dos procesos sobre la misma base, con un candado que cruza procesos (los Web Locks de WebKitGTK no los cruzan). Es la única función del anfitrión que depende de la plataforma:
+
+| Plataforma         | `has('instance.lock')` | Por qué                                                                                                                                                             |
+| ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux (escritorio) | `true`                 | `flock` sobre `instancia.lock` en el directorio de datos, detrás del plugin de D-Bus                                                                                |
+| macOS              | `false`                | hay un cerrojo parecido, pero no es una garantía: si no se puede abrir el fichero se cae a la lista de LaunchServices, y los ejecutables sin bundle no pasan por él |
+| iOS, Android       | `false`                | sin candado propio                                                                                                                                                  |
+| Windows            | `false`                | lo da el plugin de Tauri, no medido                                                                                                                                 |
+| Web                | `false`                | no hay procesos de Hebra que cerrar                                                                                                                                 |
+
+- `false` no dice que haya dos procesos: dice que Hebra no lo garantiza aquí. Trátalo como «no lo sé».
+- Un Hebra anterior a la 1.5 no conoce el nombre y también responde `false` (falso negativo conservador): un plugin que necesita el candado debe seguir funcionando sin él.
+- Host falso: `createFakePluginApi({ platform: 'linux' }).api.has('instance.lock')` da `true`; con cualquier otra plataforma (por defecto `macos`), `false`.
 
 ## Host falso
 
