@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra, versión `1.5.0` (sin publicar: la etiqueta la decide David) (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra, versión `1.6.0` (sin publicar: la etiqueta la decide David) (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0`.
 
@@ -169,6 +169,19 @@ const row = `| Espada | ${icon('Espada', 'https://render.guildwars2.com/file/…
 - El usuario puede apagar «Cargar imágenes remotas» en Ajustes: entonces la nota enseña el texto alternativo y `api.has('markdown.image.remote')` sigue dando `true` (dice lo que Hebra sabe hacer, no lo que el usuario ha elegido).
 - La petición la hace el motor web directamente al servidor de la imagen, sin `Referer` y sin los parámetros de rastreo de la URL (`utm_*`, `fbclid`, `gclid`…, que la nota conserva). Hebra no la descarga ni la guarda como adjunto, así que sin red no se ve.
 - Host falso: `fake.api.has('markdown.image.remote')` da `true`.
+
+## Novedades de la 1.6: `workspace.openNote` con pestaña nueva (sin publicar)
+
+Solo se añade. `workspace.openNote(id, options?)` admite una opción; un Hebra anterior a la 1.6 la ignora y abre la nota como siempre (en la pestaña activa).
+
+```ts
+api.workspace.openNote(id, { newTab: true });
+```
+
+- `newTab: true` abre la nota en una pestaña NUEVA y activa. Si ya está abierta en otra pestaña, activa esa (sin duplicados). Con 50 pestañas Hebra avisa y no abre nada.
+- Donde no hay pestañas (iPhone, ventana de edición suelta), `newTab: true` equivale a `openNote(id)`.
+- Sin opciones o con `{ newTab: false }` es idéntico a antes. Las claves desconocidas se ignoran, sin error.
+- `activeNote()` sigue a la pestaña activa (T10): tras abrir en pestaña nueva, es la nota recién abierta.
 
 ## Novedades de la 1.5: urgencia y silencio en `notify.system` (sin publicar)
 

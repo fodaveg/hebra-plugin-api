@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.5.0';
+export const PLUGIN_API_VERSION = '1.6.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -768,10 +768,20 @@ export interface PluginNoteTitleRenamedEvent {
   undo(): void;
 }
 
+/** Opciones de `workspace.openNote` (desde la 1.6). Las claves desconocidas se ignoran. */
+export interface PluginOpenNoteOptions {
+  /**
+   * `true` abre la nota en una pestaña NUEVA y activa (si ya está abierta en otra pestaña,
+   * activa esa; con 50 pestañas avisa y no abre nada). Donde no hay pestañas (iPhone, ventana
+   * de edición suelta) y en un Hebra anterior a la 1.6 se ignora y abre como `openNote(id)`.
+   */
+  newTab?: boolean;
+}
+
 export interface PluginWorkspace {
   activeNote(): PluginActiveNote | null;
   onActiveNoteChange(listener: (note: PluginActiveNote | null) => void): PluginUnregister;
-  openNote(id: string): void;
+  openNote(id: string, options?: PluginOpenNoteOptions): void;
   selectFolder(id: string): void;
   /** Abre la búsqueda de Hebra con `query` (p. ej. `path:"21 Proyectos"`). */
   openSearch(query: string): void;
