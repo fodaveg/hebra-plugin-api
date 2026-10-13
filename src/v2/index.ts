@@ -147,7 +147,7 @@ export type {
 export type PluginApiVersion = `2.${number}.${number}`;
 
 /** La versión de la API que describe esta entrada (la de Hebra: `HEBRA_PLUGIN_API_VERSION_V2`). */
-export const PLUGIN_API_VERSION = '2.0.0';
+export const PLUGIN_API_VERSION = '2.1.0';
 
 // ---- Capacidades (§5.3 de la spec; §5.5 para lo nuevo) ----
 
@@ -350,6 +350,16 @@ export interface PluginDecoration {
   title?: string;
   /** `true`: el rango responde al clic (cursor de enlace y `onClick` del proveedor). */
   clickable?: boolean;
+  /**
+   * Desde la 2.1.0. Solo cuenta con `clickable: true`. Sin él, todo clic principal en el rango
+   * se cancela y se entrega a `onClick` (el comportamiento de la 2.0.0). `'mod'`: solo se
+   * cancela y se entrega el clic principal con el modificador primario (Cmd en macOS e iOS,
+   * Ctrl en Linux y Windows; Alt y Mayús no cuentan y llegan en `pointer`); el clic simple no se toca y el editor pone el
+   * cursor o selecciona como en cualquier texto. El plugin no puede decidirlo en `onClick`
+   * (cruza al marco de forma asíncrona y para entonces el evento ya siguió su curso), por eso
+   * se declara aquí. Cualquier otro valor se ignora, como un campo inválido.
+   */
+  clickModifier?: 'mod';
   /** Lo que vuelve en `onClick` para saber qué se pulsó (hasta 256 caracteres). */
   data?: string;
 }

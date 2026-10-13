@@ -96,6 +96,8 @@ export function sanitizeDecorations(raw, window) {
         }
         if (item.clickable === true) {
             decoration.clickable = true;
+            if (item.clickModifier === 'mod')
+                decoration.clickModifier = 'mod';
             if (typeof item.data === 'string') {
                 decoration.data = clipText(item.data, PLUGIN_EDITOR_LIMITS.maxDataChars);
             }

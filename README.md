@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra. El paquete es la versión `2.0.0` (sin publicar: la etiqueta la decide David) y lleva DOS APIs que conviven: la 1.x de siempre en la raíz (`1.7.0`, no cambia) y la 2.0 en `hebra-plugin-api/v2` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra. El paquete es la versión `2.1.0` (sin publicar: la etiqueta la decide David; la 2.1.0 añade `clickModifier` a las decoraciones) y lleva DOS APIs que conviven: la 1.x de siempre en la raíz (`1.7.0`, no cambia) y la 2.0 en `hebra-plugin-api/v2` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la 1.x de Hebra no es la de los tipos, si la 2.0 de Hebra no es la de `v2`, o si la versión de `package.json` no es la de la 2.0 (la mayor de las dos; la etiqueta es `v2.0.0`), y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0` (1.x) o `#v2.0.0` (1.x y 2.0).
 
@@ -12,7 +12,7 @@ Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de
 | `hebra-plugin-api/shared`     | La lista de módulos que presta Hebra (`@codemirror/state`, `@codemirror/view`, `@codemirror/language`, `@lezer/common`, `@lezer/highlight`) y la clave de su registro global. |
 | `hebra-plugin-api/build`      | `hebraShared()` para esbuild y `hebraSharedRollup()` para Rollup, Rolldown y Vite: cada import de un módulo prestado lee el de Hebra en vez de empaquetar otra copia.         |
 | `hebra-plugin-api/testing`    | `createFakePluginApi(options)`: una API en memoria para probar un plugin sin Hebra.                                                                                           |
-| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.0.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
+| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.1.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
 | `hebra-plugin-api/v2/testing` | `createFakePluginApiV2(options)`: el host falso de la 2.0.                                                                                                                    |
 
 Los tipos son TypeScript sin compilar (`src/`); el código que importa Node o empaqueta esbuild sale de `dist/` en el paquete publicado.
