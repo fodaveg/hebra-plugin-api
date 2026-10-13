@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.6.0';
+export const PLUGIN_API_VERSION = '1.7.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -74,12 +74,17 @@ export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
  *   puede fiarse de los Web Locks de WebKitGTK (no cruzan procesos). `false` NO dice que
  *   haya dos procesos, dice que Hebra no lo garantiza aquí. Un Hebra anterior a la 1.5
  *   no conoce el nombre y también responde `false`: es un falso negativo conservador.
+ * - `ui.view.tab` (desde la 1.7): `placement: 'tab'` (`PluginTabViewDefinition`) y
+ *   `workspace.openView`: una vista del plugin como contenido de una pestaña de la columna
+ *   de contenido. `true` en todas las plataformas (donde no hay tira de pestañas, como el
+ *   iPhone, la vista ocupa la pestaña única); un Hebra anterior responde `false`.
  */
 export const PLUGIN_HOST_FEATURES = [
   'ui.view.main',
   'markdown.image.remote',
   'notify.urgency',
-  'instance.lock'
+  'instance.lock',
+  'ui.view.tab'
 ] as const;
 export type PluginHostFeature = (typeof PLUGIN_HOST_FEATURES)[number];
 
@@ -312,6 +317,102 @@ export interface PluginMainViewDefinition {
   mountSection(el: HTMLElement, sectionId: string): void | (() => void) | PluginViewSectionMount;
 }
 
+/**
+ * Desde la 1.7. Un valor JSON: lo único que admite el estado de una vista de pestaña. Sin
+ * `undefined`, funciones, fechas, `NaN` ni infinitos; los objetos, planos.
+ */
+export type PluginJsonValue =
+  null | boolean | number | string | PluginJsonValue[] | { [key: string]: PluginJsonValue };
+
+/** Desde la 1.7. Tope del estado de UNA pestaña: bytes UTF-8 de su `JSON.stringify`. */
+export const PLUGIN_TAB_VIEW_STATE_MAX_BYTES = 8192;
+
+/** Desde la 1.7. Tope de la clave de una pestaña y de su título, en caracteres. */
+export const PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH = 200;
+
+/**
+ * Desde la 1.7. Lo que recibe `mount` de una vista de pestaña: de qué pestaña se trata y
+ * cómo dejar en ella lo que haga falta para volver a pintarla.
+ */
+export interface PluginTabViewContext {
+  /** La clave con la que se abrió (`''` sin ella). Con el id de la vista, es la identidad
+   *  de la pestaña. */
+  readonly key: string;
+  /** El estado de ESTA pestaña: el de `openView`, el último `setState` o el que vuelve al
+   *  arrancar. `null` si no tiene. Una copia: cambiarla no cambia nada. */
+  readonly state: PluginJsonValue | null;
+  /**
+   * Guarda el estado de esta pestaña (en el dispositivo, con las pestañas: no se
+   * sincroniza). Llega en `state` la próxima vez que se monte, también tras cerrar y abrir
+   * Hebra y al reabrir la pestaña. Lanza `invalid-argument` si no es JSON o pasa de
+   * `PLUGIN_TAB_VIEW_STATE_MAX_BYTES`. Tras desmontar no hace nada.
+   */
+  setState(state: PluginJsonValue | null): void;
+  /** Cambia el título de esta pestaña (`null` o `''`: vuelve al título de la vista). Más
+   *  de `PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH` caracteres lanza `invalid-argument`. */
+  setTitle(title: string | null): void;
+}
+
+/** Desde la 1.7. Lo que `mount` de una vista de pestaña puede devolver. */
+export interface PluginTabViewMount {
+  /** Hebra la llama UNA vez, al desmontar: suelta aquí lo que montaste. */
+  unmount?(): void;
+}
+
+/**
+ * Desde la 1.7. Una vista como CONTENIDO DE UNA PESTAÑA de la columna de contenido, como
+ * una nota, un fichero o una Base. Solo existe si `api.has('ui.view.tab')`. No es la
+ * vista `'main'` (que es un modo de la barra lateral y nunca una pestaña) ni la pestaña
+ * del inspector (`'column'`).
+ *
+ * **Abrir.** `api.workspace.openView(id, { key, state, title, newTab })` (o
+ * `ui.revealView(id)`, que abre la de clave `''` en la pestaña activa). La identidad de la
+ * pestaña es plugin + vista + `key`: abrir otra vez la misma clave activa su pestaña (sin
+ * duplicados) y no cambia su estado. Puede haber varias pestañas de la misma vista con
+ * claves distintas.
+ *
+ * **Montaje.** `mount(el, ctx)` es síncrona (no devuelvas una promesa) y se llama cuando
+ * la pestaña pasa a verse; al dejar de verse (otra pestaña, Bases u otro modo en la
+ * columna, cerrarla, apagar el plugin) Hebra desmonta: llama a la limpieza que devolviste
+ * y `el` sale del documento. Lo que quieras conservar va en `ctx.setState`, que vuelve en
+ * `ctx.state` al montar otra vez. Un `mount` que lanza no tumba Hebra: se anota con el id
+ * del plugin y la pestaña enseña «No se pudo abrir ‹título›» con «Reintentar».
+ *
+ * **El elemento `el`.** Ya está en el documento. Ocupa la columna de contenido bajo la
+ * tira de pestañas, sin relleno ni ancho máximo, y se desplaza en vertical. Lleva
+ * `hebra-module-view-content hebra-module-view-tab-content` y `data-key`; su padre,
+ * `hebra-module-view hebra-module-view-tab` (ponle ahí `container-type`).
+ *
+ * **Ciclo de vida.** Desregistrar la vista desmonta sus pestañas y las deja esperando
+ * («Abriendo…»); registrarla otra vez con el mismo id las vuelve a montar con su estado.
+ * Apagar o desinstalar el plugin CIERRA sus pestañas. Al arrancar solo vuelven las de un
+ * plugin instalado y encendido. Mientras una pestaña de vista está activa,
+ * `workspace.activeNote()` es `null`.
+ */
+export interface PluginTabViewDefinition {
+  id: string;
+  title: string;
+  /** Nombre Lucide: el icono de sus pestañas. */
+  icon: string;
+  placement: 'tab';
+  mount(el: HTMLElement, ctx: PluginTabViewContext): void | (() => void) | PluginTabViewMount;
+}
+
+/** Desde la 1.7. Opciones de `workspace.openView`. Las claves desconocidas se ignoran. */
+export interface PluginOpenViewOptions {
+  /** Distingue pestañas de la misma vista (p. ej. el id de lo que enseñan). Por defecto
+   *  `''`; hasta `PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH` caracteres. */
+  key?: string;
+  /** El estado inicial si la pestaña es nueva (ver `PluginTabViewContext.setState`). */
+  state?: PluginJsonValue | null;
+  /** El título de la pestaña; sin él, el de la vista. */
+  title?: string | null;
+  /** `true`: en una pestaña nueva y activa (con 50 avisa y no abre). Sin ella, sustituye lo
+   *  que enseña la pestaña activa (si está fijada, abre una nueva). Donde no hay tira de
+   *  pestañas, como el iPhone, se ignora. */
+  newTab?: boolean;
+}
+
 /** Desde la 1.3. Opciones de `ui.revealView`. */
 export interface PluginRevealViewOptions {
   /** La sección de una vista `'main'` que se abre (y queda como la recordada). */
@@ -406,11 +507,15 @@ export interface PluginStatusBarItemHandle {
  */
 export interface PluginUi {
   /** Desde la 1.3 admite también una vista `'main'` (`PluginMainViewDefinition`); si sus
-   *  `sections` no valen, lanza `invalid-argument`. */
-  registerView(view: PluginViewDefinition | PluginMainViewDefinition): PluginUnregister;
+   *  `sections` no valen, lanza `invalid-argument`. Desde la 1.7, una vista de pestaña
+   *  (`PluginTabViewDefinition`); sin `mount`, `invalid-argument`. */
+  registerView(
+    view: PluginViewDefinition | PluginMainViewDefinition | PluginTabViewDefinition
+  ): PluginUnregister;
   /**
    * Enseña la vista: la pestaña del inspector, el diálogo o, con `'main'`, la pantalla
-   * principal. Un id sin registrar no hace nada.
+   * principal. Con `'tab'` (desde la 1.7), lo mismo que `workspace.openView(id)`: la de
+   * clave `''` en la pestaña activa. Un id sin registrar no hace nada.
    *
    * `options.section` (desde la 1.3) abre una vista `'main'` en esa sección, esté ya
    * abierta o no, y la deja como la recordada. Si esa sección no existe no lanza: con la
@@ -772,8 +877,8 @@ export interface PluginNoteTitleRenamedEvent {
 export interface PluginOpenNoteOptions {
   /**
    * `true` abre la nota en una pestaña NUEVA y activa (si ya está abierta en otra pestaña,
-   * activa esa; con 50 pestañas avisa y no abre nada). Donde no hay pestañas (iPhone, ventana
-   * de edición suelta) y en un Hebra anterior a la 1.6 se ignora y abre como `openNote(id)`.
+   * activa esa; con 50 pestañas avisa y no abre nada). Solo el iPhone no tiene pestañas:
+   * ahí, y en un Hebra anterior a la 1.6, se ignora y abre como `openNote(id)`.
    */
   newTab?: boolean;
 }
@@ -782,6 +887,14 @@ export interface PluginWorkspace {
   activeNote(): PluginActiveNote | null;
   onActiveNoteChange(listener: (note: PluginActiveNote | null) => void): PluginUnregister;
   openNote(id: string, options?: PluginOpenNoteOptions): void;
+  /**
+   * Desde la 1.7 (antes no existe: comprueba `api.has('ui.view.tab')`). Abre una vista de
+   * pestaña de ESTE plugin (`PluginTabViewDefinition`), por su identidad vista + `key`: si
+   * ya tiene pestaña la activa tal cual; si no, la abre con `state` y `title`. Lanza
+   * `invalid-argument` si `viewId` no es una vista de pestaña registrada por este plugin, o
+   * si `key`, `state` o `title` no valen. No monta nada antes de volver.
+   */
+  openView(viewId: string, options?: PluginOpenViewOptions): void;
   selectFolder(id: string): void;
   /** Abre la búsqueda de Hebra con `query` (p. ej. `path:"21 Proyectos"`). */
   openSearch(query: string): void;

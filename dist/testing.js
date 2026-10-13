@@ -1,4 +1,4 @@
-import { PLUGIN_API_VERSION, PLUGIN_HOST_FEATURES } from './index.js';
+import { PLUGIN_API_VERSION, PLUGIN_HOST_FEATURES, PLUGIN_TAB_VIEW_STATE_MAX_BYTES, PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH } from './index.js';
 class FakePluginApiError extends Error {
     code;
     name = 'PluginApiError';
@@ -7,6 +7,47 @@ class FakePluginApiError extends Error {
         this.code = code;
     }
 }
+/** Por qué no vale un estado de pestaña (`PluginTabViewContext.setState`), o `null`. */
+function fakeTabStateProblem(value) {
+    if (value === undefined || value === null)
+        return null;
+    const plain = (item, depth) => {
+        if (depth > 64)
+            return false;
+        if (item === null || typeof item === 'boolean' || typeof item === 'string')
+            return true;
+        if (typeof item === 'number')
+            return Number.isFinite(item);
+        if (Array.isArray(item))
+            return item.every((entry) => plain(entry, depth + 1));
+        if (typeof item !== 'object')
+            return false;
+        const proto = Object.getPrototypeOf(item);
+        if (proto !== Object.prototype && proto !== null)
+            return false;
+        return Object.values(item).every((entry) => plain(entry, depth + 1));
+    };
+    if (!plain(value, 0))
+        return 'el estado no es JSON';
+    const bytes = new TextEncoder().encode(JSON.stringify(value)).length;
+    return bytes > PLUGIN_TAB_VIEW_STATE_MAX_BYTES
+        ? `el estado ocupa ${bytes} bytes y el tope es ${PLUGIN_TAB_VIEW_STATE_MAX_BYTES}`
+        : null;
+}
+/** Por qué no vale una clave o un título de pestaña, o `null`. */
+function fakeTabTextProblem(value, what) {
+    if (value === undefined || (what === 'título' && value === null))
+        return null;
+    if (typeof value !== 'string')
+        return `la ${what} tiene que ser un texto`;
+    const length = what === 'título' ? value.trim().length : value.length;
+    return length > PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH
+        ? `la ${what} pasa de ${PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH} caracteres`
+        : null;
+}
+const copyJson = (value) => value === undefined || value === null
+    ? null
+    : JSON.parse(JSON.stringify(value));
 /** Peticiones encadenadas que atiende una sola entrada (como Hebra): dos secciones que
  *  se piden la una a la otra no cuelgan el test. */
 const MAX_CHAINED_SECTION_REQUESTS = 8;
@@ -169,6 +210,8 @@ export function createFakePluginApi(options = {}) {
     const recorded = {
         views: [],
         mainViews: [],
+        tabViews: [],
+        viewOpens: [],
         reveals: [],
         commands: [],
         ribbon: [],
@@ -452,6 +495,69 @@ export function createFakePluginApi(options = {}) {
         mounted: (viewId) => [...(mainViews.get(viewId)?.mounted.keys() ?? [])],
         sections: (viewId) => (mainViews.get(viewId)?.sections ?? []).map((section) => ({ ...section }))
     };
+    // ---- Vistas de pestaña (1.7) ----
+    /** Lo montado de cada vista de pestaña, para desmontarlo al desregistrarla. */
+    const tabMounts = new WeakMap();
+    const tabView = {
+        mount(viewId, options = {}) {
+            const view = recorded.tabViews.find((entry) => entry.id === viewId);
+            if (!view)
+                throw new Error(`createFakePluginApi: no hay una vista de pestaña «${viewId}».`);
+            const where = `Vista «${viewId}»`;
+            let state = copyJson(options.state);
+            let title = null;
+            let alive = true;
+            const container = document.createElement('div');
+            container.className = 'hebra-module-view hebra-module-view-tab';
+            const el = document.createElement('div');
+            el.className = 'hebra-module-view-content hebra-module-view-tab-content';
+            el.dataset.key = options.key ?? '';
+            container.append(el);
+            document.body.append(container);
+            let cleanup = null;
+            const handle = {
+                el,
+                state: () => copyJson(state),
+                title: () => title,
+                unmount() {
+                    if (!alive)
+                        return;
+                    alive = false;
+                    tabMounts.get(view)?.delete(handle);
+                    container.remove();
+                    cleanup?.();
+                }
+            };
+            const result = view.mount(el, {
+                key: options.key ?? '',
+                get state() {
+                    return copyJson(state);
+                },
+                setState(next) {
+                    const problem = fakeTabStateProblem(next);
+                    if (problem)
+                        throw new FakePluginApiError('invalid-argument', `${where}: ${problem}.`);
+                    if (alive)
+                        state = copyJson(next);
+                },
+                setTitle(next) {
+                    const problem = fakeTabTextProblem(next, 'título');
+                    if (problem)
+                        throw new FakePluginApiError('invalid-argument', `${where}: ${problem}.`);
+                    if (alive)
+                        title = next?.trim() ? next.trim() : null;
+                }
+            });
+            if (typeof result === 'function')
+                cleanup = result;
+            else if (result && typeof result.unmount === 'function')
+                cleanup = () => result.unmount();
+            const mounted = tabMounts.get(view) ?? new Set();
+            mounted.add(handle);
+            tabMounts.set(view, mounted);
+            return handle;
+        }
+    };
     const api = {
         apiVersion: PLUGIN_API_VERSION,
         plugin: { id: pluginId, version: options.version ?? '0.0.0' },
@@ -478,8 +584,26 @@ export function createFakePluginApi(options = {}) {
             registerView: (view) => {
                 // Como `registerView` de Hebra: un id registrado, de la colocación que sea, no se
                 // puede registrar otra vez hasta que se desregistre.
-                if (mainViews.has(view.id) || recorded.views.some((entry) => entry.id === view.id)) {
+                if (mainViews.has(view.id) ||
+                    recorded.views.some((entry) => entry.id === view.id) ||
+                    recorded.tabViews.some((entry) => entry.id === view.id)) {
                     throw new Error(`createFakePluginApi: Ya hay una vista de módulo registrada con el id «${view.id}».`);
+                }
+                if (view.placement === 'tab') {
+                    if (typeof view.mount !== 'function') {
+                        throw new FakePluginApiError('invalid-argument', `Vista «${view.id}»: falta \`mount\`.`);
+                    }
+                    viewTitles.set(view.id, view.title);
+                    recorded.tabViews.push(view);
+                    const removeTab = remover(recorded.tabViews, view);
+                    return () => {
+                        if (recorded.tabViews.includes(view))
+                            viewTitles.delete(view.id);
+                        removeTab();
+                        // Como Hebra: desregistrar desmonta lo que la enseñaba.
+                        for (const handle of [...(tabMounts.get(view) ?? [])])
+                            handle.unmount();
+                    };
                 }
                 if (view.placement === 'main') {
                     const problem = mainSectionsProblem(view);
@@ -940,6 +1064,20 @@ export function createFakePluginApi(options = {}) {
             activeNote: () => null,
             onActiveNoteChange: () => () => { },
             openNote: () => { },
+            // 1.7: valida como Hebra y apunta; no abre ni monta nada (eso es `tabView.mount`).
+            openView(viewId, options) {
+                const where = `Vista «${String(viewId)}»`;
+                if (!recorded.tabViews.some((view) => view.id === viewId)) {
+                    throw new FakePluginApiError('invalid-argument', `${where}: no es una vista de pestaña registrada por «${pluginId}».`);
+                }
+                const given = typeof options === 'object' && options !== null ? options : {};
+                const problem = fakeTabTextProblem(given.key, 'clave') ??
+                    fakeTabStateProblem(given.state) ??
+                    fakeTabTextProblem(given.title, 'título');
+                if (problem)
+                    throw new FakePluginApiError('invalid-argument', `${where}: ${problem}.`);
+                recorded.viewOpens.push({ viewId, options: { ...given } });
+            },
             selectFolder: () => { },
             openSearch: () => { },
             onFoldersChange: () => () => { },
@@ -1089,6 +1227,7 @@ export function createFakePluginApi(options = {}) {
                 listener(on);
         },
         viewTitle: (id) => viewTitles.get(id) ?? null,
-        mainView
+        mainView,
+        tabView
     };
 }

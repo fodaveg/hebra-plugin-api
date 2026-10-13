@@ -1,6 +1,6 @@
 {
   "name": "hebra-plugin-api",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "Tipos de la API de plugins de Hebra, préstamo de CodeMirror en build (hebraShared) y host falso para tests.",
   "type": "module",
   "exports": {
@@ -19,6 +19,14 @@
     "./testing": {
       "types": "./src/testing.ts",
       "default": "./dist/testing.js"
+    },
+    "./v2": {
+      "types": "./src/v2/index.ts",
+      "default": "./dist/v2/index.js"
+    },
+    "./v2/testing": {
+      "types": "./src/v2/testing.ts",
+      "default": "./dist/v2/testing.js"
     }
   },
   "files": [

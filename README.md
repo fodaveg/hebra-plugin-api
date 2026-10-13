@@ -1,19 +1,48 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra, versión `1.6.0` (sin publicar: la etiqueta la decide David) (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra. El paquete es la versión `2.0.0` (sin publicar: la etiqueta la decide David) y lleva DOS APIs que conviven: la 1.x de siempre en la raíz (`1.7.0`, no cambia) y la 2.0 en `hebra-plugin-api/v2` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
-Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la versión de `package.json` no es la que implementa Hebra, y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0`.
+Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la 1.x de Hebra no es la de los tipos, si la 2.0 de Hebra no es la de `v2`, o si la versión de `package.json` no es la de la 2.0 (la mayor de las dos; la etiqueta es `v2.0.0`), y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0` (1.x) o `#v2.0.0` (1.x y 2.0).
 
 ## Qué trae
 
-| Entrada                    | Qué es                                                                                                                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hebra-plugin-api`         | Tipos (`HebraPluginApi`, `HebraPluginModule` y cada fachada), `PLUGIN_CAPABILITIES`, `PLUGIN_API_ERROR_CODES` e `isPluginApiError(error, code?)`.                             |
-| `hebra-plugin-api/shared`  | La lista de módulos que presta Hebra (`@codemirror/state`, `@codemirror/view`, `@codemirror/language`, `@lezer/common`, `@lezer/highlight`) y la clave de su registro global. |
-| `hebra-plugin-api/build`   | `hebraShared()` para esbuild y `hebraSharedRollup()` para Rollup, Rolldown y Vite: cada import de un módulo prestado lee el de Hebra en vez de empaquetar otra copia.         |
-| `hebra-plugin-api/testing` | `createFakePluginApi(options)`: una API en memoria para probar un plugin sin Hebra.                                                                                           |
+| Entrada                       | Qué es                                                                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hebra-plugin-api`            | Tipos (`HebraPluginApi`, `HebraPluginModule` y cada fachada), `PLUGIN_CAPABILITIES`, `PLUGIN_API_ERROR_CODES` e `isPluginApiError(error, code?)`.                             |
+| `hebra-plugin-api/shared`     | La lista de módulos que presta Hebra (`@codemirror/state`, `@codemirror/view`, `@codemirror/language`, `@lezer/common`, `@lezer/highlight`) y la clave de su registro global. |
+| `hebra-plugin-api/build`      | `hebraShared()` para esbuild y `hebraSharedRollup()` para Rollup, Rolldown y Vite: cada import de un módulo prestado lee el de Hebra en vez de empaquetar otra copia.         |
+| `hebra-plugin-api/testing`    | `createFakePluginApi(options)`: una API en memoria para probar un plugin sin Hebra.                                                                                           |
+| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.0.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
+| `hebra-plugin-api/v2/testing` | `createFakePluginApiV2(options)`: el host falso de la 2.0.                                                                                                                    |
 
 Los tipos son TypeScript sin compilar (`src/`); el código que importa Node o empaqueta esbuild sale de `dist/` en el paquete publicado.
+
+## API 2.0: `hebra-plugin-api/v2`
+
+La 2.0 es la API de un plugin que corre AISLADO: en su propio origen, dentro de un marco, sin acceso al DOM, al `localStorage`, al IndexedDB ni a la IPC de Hebra. Todo lo que hace pasa por la API, que cruza un puerto (`MessagePort`) hacia Hebra. Detalle en `docs/SPEC-PLUGINS-EXTERNOS.md`: §5.5 (la 2.0 y sus subsecciones), §6.1 (sin préstamo y editor declarativo) y §8.1 (modelo de seguridad). Aquí solo lo que hay que saber para usarla.
+
+Nada de la 1.x cambia: `hebra-plugin-api`, `/shared`, `/build` y `/testing` son los mismos, un plugin 1.x compila y corre igual y Hebra sigue ejecutándolo como hasta ahora mientras haya plugins en la 1.x (conviven). Un plugin migra cambiando `from 'hebra-plugin-api'` por `from 'hebra-plugin-api/v2'` y arreglando lo que señale el compilador; los nombres de los tipos son los de la 1.x.
+
+```ts
+import { isPluginApiError, type HebraPluginApi } from 'hebra-plugin-api/v2';
+import { createFakePluginApiV2 } from 'hebra-plugin-api/v2/testing'; // en los tests
+
+export async function activate(api: HebraPluginApi): Promise<void> {
+  api.ui.registerCommand({ id: 'hola', name: 'Hola', run: () => api.ui.notice(api.plugin.id) });
+}
+```
+
+`createFakePluginApiV2({ id, capabilities })` devuelve `{ api, dispose, … }` y se usa como el falso de la 1.x. `hebra.json` pide la 2.0 con `apiVersion`: un rango de mayor 2 (`"apiVersion": "^2.0.0"`) hace que Hebra ejecute el plugin aislado; la mayor la decide la cota inferior del rango, así que un `>=1.5.0` escrito para la 1.x sigue siendo 1.x. Una Hebra que solo implementa la 1.x deja un plugin 2.0 instalado y apagado («Necesita una versión más nueva de Hebra»). Hoy la 2.0 va detrás de una marca de build de Hebra, apagada en producción hasta que se acepte (§5.5.1).
+
+### Qué cambia respecto a la 1.x
+
+- **Sin `registerExtension`.** La 2.0 no presta CodeMirror ni deja extender el editor: el plugin dice QUÉ y Hebra lo ejecuta en su editor. `editor.registerDecorations({ id, provide, onClick? })` pinta rangos con un juego fijo de estilos (`link`, `accent`, `muted`, `warning`, `danger`) y `editor.registerCompletion({ id, triggers?, provide })` ofrece sugerencias. `editor.registerCodeBlock` conserva su firma (§6.1).
+- **Superficies en lugar de `document`.** El código del plugin corre en un marco de ejecución oculto; lo que se ve (vistas, panel de ajustes, modal, bloque de código) es una superficie, y `mount(el)` entrega un `el` de otro documento: `el.ownerDocument` no es `document` y `instanceof HTMLElement` da `false` entre marcos. Lo que pinta Hebra y llama al plugin entrega el clic serializado (`PluginPointerInfo`), no un `MouseEvent` (§5.5.2).
+- **`storage.indexedDB` y `storage.device`.** Una fábrica IndexedDB cuyos datos guarda Hebra (con `storage.IDBKeyRange` y `storage.indexedDbName(name)`), y `storage.device` con `get` síncrono sobre un espejo, `set`/`remove` inmediatos y `flush()` nuevo. `window.indexedDB` y `localStorage` del marco no persisten en todas partes: no se usan. Topes por plugin: 128 MiB de IndexedDB y 1 MiB de `storage.device` (§5.5.4).
+- **`ui.openExternal(url)`** con confirmación: la primera vez que un plugin abre un dominio, Hebra enseña la URL entera y pregunta (casilla «No volver a preguntar para este dominio», por dispositivo). Resuelve `'opened'` o `'cancelled'`; solo `https:` y `http:` (§5.5.2).
+- **`notify.sound`**: capacidad nueva, solo con `apiVersion` 2.x. `register(id, { bytes, mime })` una vez y `play(id, { volume })` después; lo reproduce Hebra, el usuario puede silenciarlo (`'muted'`) (§5.5.6, punto 3).
+- **`network.images`** en `hebra.json`: hosts exactos `https` desde los que las superficies pueden cargar `<img>`; la CSP del marco solo permite `'self'`, `data:` y `blob:` más esos hosts (§5.5.6, punto 1).
+- **Otros cambios que el compilador señala:** `api.clipboard.writeText` (lo escribe Hebra, con gesto del usuario; sin él, `user-activation-required`), `shared` vacío en el manifiesto, y los errores no incluyen `extension-rechazada`.
 
 ## Un plugin mínimo
 
@@ -170,6 +199,39 @@ const row = `| Espada | ${icon('Espada', 'https://render.guildwars2.com/file/…
 - La petición la hace el motor web directamente al servidor de la imagen, sin `Referer` y sin los parámetros de rastreo de la URL (`utm_*`, `fbclid`, `gclid`…, que la nota conserva). Hebra no la descarga ni la guarda como adjunto, así que sin red no se ve.
 - Host falso: `fake.api.has('markdown.image.remote')` da `true`.
 
+## Novedades de la 1.7: una vista del plugin como contenido de pestaña (sin publicar)
+
+Solo se añade. Una vista con `placement: 'tab'` se enseña en la columna de contenido como una pestaña más, junto a las notas, los ficheros y las Bases: se fija, se reordena, se cierra, se reabre y vuelve al arrancar. No es la vista `'main'` (un modo de la barra lateral, nunca una pestaña) ni la pestaña del inspector (`'column'`).
+
+```ts
+if (api.has('ui.view.tab')) {
+  api.ui.registerView({
+    id: 'indice',
+    title: 'Índice',
+    icon: 'list',
+    placement: 'tab',
+    mount(el, ctx) {
+      const area = render(el, ctx.key, ctx.state); // ctx.state: lo guardado, o null
+      area.onScroll((y) => ctx.setState({ y })); // vuelve en ctx.state al montar otra vez
+      ctx.setTitle(`Índice ${ctx.key}`);
+      return () => area.destroy();
+    }
+  });
+  api.workspace.openView('indice', { key: '21.05', state: { y: 0 }, newTab: true });
+}
+```
+
+- `api.has('ui.view.tab')` es una función del anfitrión, no un permiso: no la declares en `hebra.json`. En un Hebra anterior da `false` y `workspace.openView` no existe; un Hebra anterior registra `placement: 'tab'` sin enseñarlo en ningún sitio, así que pregunta antes (o pide `"apiVersion": "^1.7.0"`).
+- La identidad de una pestaña es plugin + vista + `key` (por defecto `''`): `openView` con una clave que ya tiene pestaña la activa tal cual, sin cambiar su estado. Claves distintas son pestañas distintas de la misma vista.
+- `openView(id, { key, state, title, newTab })`: sin `newTab`, sustituye lo que enseña la pestaña activa (si está fijada, abre una nueva); con `newTab: true`, en una pestaña nueva y activa (con 50 avisa y no abre). Solo el iPhone no tiene pestañas: ahí `newTab` se ignora y la vista ocupa la columna de contenido. `ui.revealView(id)` de una vista de pestaña abre la de clave `''` en la pestaña activa (es lo que hace «Abrir «‹título›»» de la paleta).
+- Lanza `invalid-argument` si `id` no es una vista de pestaña registrada por TU plugin, si `key` o `title` pasan de 200 caracteres, o si `state` no es JSON (`PluginJsonValue`) o pasa de 8 KiB (`PLUGIN_TAB_VIEW_STATE_MAX_BYTES`, bytes UTF-8 de su `JSON.stringify`).
+- `mount(el, ctx)` es síncrona y se llama cuando la pestaña pasa a verse; al dejar de verse (otra pestaña, Bases u otro modo en la columna, cerrarla, apagar el plugin) Hebra llama a la limpieza que devolviste (una función o `{ unmount }`) y `el` sale del documento. Lo que quieras conservar, en `ctx.setState`: vuelve en `ctx.state` al montar otra vez, al reabrir la pestaña y tras cerrar y abrir Hebra (se guarda en el dispositivo, no se sincroniza). `ctx.setTitle(título)` cambia el de ESA pestaña (`null` o `''`: el de la vista). Tras desmontar, los dos no hacen nada.
+- `el` lleva `hebra-module-view-content hebra-module-view-tab-content` y `data-key`; su padre, `hebra-module-view hebra-module-view-tab` (ponle ahí `container-type`). Ocupa la columna de contenido bajo la tira, sin relleno ni ancho máximo, y se desplaza en vertical.
+- Un `mount` que lanza no tumba Hebra: se anota con el id de tu plugin y la pestaña enseña «No se pudo abrir ‹título›» con «Reintentar».
+- Desregistrar la vista desmonta sus pestañas, que esperan («Abriendo…»); registrarla otra vez con el mismo id las vuelve a montar con su estado. Apagar o desinstalar el plugin CIERRA sus pestañas, y al arrancar solo vuelven las de un plugin instalado y encendido.
+- Mientras una pestaña de vista está activa, `workspace.activeNote()` es `null` y `onActiveNoteChange` avisa con `null`. El menú de la pestaña no ofrece «Abrir en nueva ventana» ni «Mostrar en la carpeta». La pestaña lleva el icono de la vista (tu `iconImage` si es el `icon` de tu manifiesto) y «, vista de plugin» en su nombre accesible. Un botón de `ribbon` con el `viewId` de una vista de pestaña no refleja `aria-pressed` (todavía).
+- Host falso: `fake.api.has('ui.view.tab')` da `true`; las vistas van a `recorded.tabViews` (no a `recorded.views`), cada `openView` aceptado a `recorded.viewOpens` (valida como Hebra), y `fake.tabView.mount(id, { key, state })` monta la vista como al activar su pestaña y devuelve `{ el, state(), title(), unmount() }`. No imita la tira, la persistencia ni cuándo monta Hebra; un `mount` que lanza sube por ahí.
+
 ## Novedades de la 1.6: `workspace.openNote` con pestaña nueva (sin publicar)
 
 Solo se añade. `workspace.openNote(id, options?)` admite una opción; un Hebra anterior a la 1.6 la ignora y abre la nota como siempre (en la pestaña activa).
@@ -179,7 +241,7 @@ api.workspace.openNote(id, { newTab: true });
 ```
 
 - `newTab: true` abre la nota en una pestaña NUEVA y activa. Si ya está abierta en otra pestaña, activa esa (sin duplicados). Con 50 pestañas Hebra avisa y no abre nada.
-- Donde no hay pestañas (iPhone, ventana de edición suelta), `newTab: true` equivale a `openNote(id)`.
+- Solo el iPhone no tiene pestañas: ahí `newTab: true` equivale a `openNote(id)`.
 - Sin opciones o con `{ newTab: false }` es idéntico a antes. Las claves desconocidas se ignoran, sin error.
 - `activeNote()` sigue a la pestaña activa (T10): tras abrir en pestaña nueva, es la nota recién abierta.
 

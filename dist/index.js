@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.6.0';
+export const PLUGIN_API_VERSION = '1.7.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**
@@ -50,12 +50,17 @@ export const PLUGIN_CAPABILITIES = [
  *   puede fiarse de los Web Locks de WebKitGTK (no cruzan procesos). `false` NO dice que
  *   haya dos procesos, dice que Hebra no lo garantiza aquí. Un Hebra anterior a la 1.5
  *   no conoce el nombre y también responde `false`: es un falso negativo conservador.
+ * - `ui.view.tab` (desde la 1.7): `placement: 'tab'` (`PluginTabViewDefinition`) y
+ *   `workspace.openView`: una vista del plugin como contenido de una pestaña de la columna
+ *   de contenido. `true` en todas las plataformas (donde no hay tira de pestañas, como el
+ *   iPhone, la vista ocupa la pestaña única); un Hebra anterior responde `false`.
  */
 export const PLUGIN_HOST_FEATURES = [
     'ui.view.main',
     'markdown.image.remote',
     'notify.urgency',
-    'instance.lock'
+    'instance.lock',
+    'ui.view.tab'
 ];
 // ---- Errores ----
 /**
@@ -98,3 +103,7 @@ export function isPluginApiError(error, code) {
         return false;
     return code === undefined || candidate.code === code;
 }
+/** Desde la 1.7. Tope del estado de UNA pestaña: bytes UTF-8 de su `JSON.stringify`. */
+export const PLUGIN_TAB_VIEW_STATE_MAX_BYTES = 8192;
+/** Desde la 1.7. Tope de la clave de una pestaña y de su título, en caracteres. */
+export const PLUGIN_TAB_VIEW_TEXT_MAX_LENGTH = 200;
