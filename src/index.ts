@@ -17,7 +17,7 @@
 import type { Extension } from '@codemirror/state';
 
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.7.0';
+export const PLUGIN_API_VERSION = '1.8.0';
 
 // ---- Plataforma y capacidades (§5.3, §7) ----
 
@@ -41,7 +41,8 @@ export const PLUGIN_CAPABILITIES = [
   'secrets',
   'tcp',
   'notify.system',
-  'background'
+  'background',
+  'screen.awake'
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
 
@@ -500,6 +501,11 @@ export interface PluginStatusBarItemHandle {
   remove(): void;
 }
 
+/** Desde la 1.8. Lo que resuelve `ui.keepScreenOn`. */
+export interface PluginKeepScreenOnResult {
+  held: boolean;
+}
+
 /**
  * Vistas, comandos, ribbon, panel de ajustes, modal, aviso, menú, iconos y barra de
  * estado. Cada registro se deshace solo al apagar el plugin. Un callback que lanza
@@ -557,6 +563,31 @@ export interface PluginUi {
   /** Tras abrir la biblioteca; si ya está abierta, en el acto. */
   onReady(callback: () => void): PluginUnregister;
   openExternal(url: string): Promise<void>;
+  /**
+   * Desde la 1.8 (capacidad `screen.awake`: decláralo en `hebra.json`; comprueba antes
+   * `api.has('screen.awake')`). Pide que la pantalla NO se apague sola mientras la vista
+   * `viewId` (el `id` con el que la registraste, de cualquier `placement`) esté a la vista.
+   * `on: true` pide el bloqueo; `on: false` lo suelta. Es idempotente: repetir `true` o
+   * `false` no suma ni resta, y un `false` sobre una vista sin bloqueo resuelve
+   * `{ held: false }` sin error.
+   *
+   * Solo en iPhone e iPad. En el resto de plataformas, con la capacidad declarada, resuelve
+   * `{ held: false }` sin lanzar (y `has('screen.awake')` da `false`). Sin declararla,
+   * rechaza con `capability-not-declared`. Un `viewId` que no es una vista de este plugin
+   * rechaza con `invalid-argument`.
+   *
+   * `held: true` = Hebra aceptó la petición; no dice que la pantalla esté bloqueada AHORA
+   * (puede no verse la vista todavía, o estar la app en segundo plano).
+   *
+   * Hebra lo suelta solo, sin que el plugin lo pida: al cerrar la vista, al dejar de verse
+   * (otra pantalla u otra pestaña; en una vista `'main'` basta con que ninguna sección se
+   * vea) y al desactivar o descargar el plugin. Dejar de verse la vista ANULA la petición:
+   * al volver a mostrarla hay que pedirla de nuevo (lo natural es hacerlo en `mount` o en
+   * `onVisibilityChange(true)`). Con la app en segundo plano la pantalla no se bloquea, y al
+   * volver a primer plano con la vista aún visible se re-aplica sola. Con dos vistas
+   * pedidas, el bloqueo sigue hasta que se sueltan las dos.
+   */
+  keepScreenOn(viewId: string, on: boolean): Promise<PluginKeepScreenOnResult>;
   /**
    * Selector de carpeta DE LA BIBLIOTECA (no del sistema de ficheros). Resuelve con el
    * ID de la carpeta elegida (el mismo que `vault.foldersList` y `PluginNoteSummary.folderId`),

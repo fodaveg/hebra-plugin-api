@@ -427,6 +427,8 @@ export interface PluginFrameRpc {
   };
   readonly 'ui.openSettings': Fire<PluginUi['openSettings']>;
   readonly 'ui.pickFolder': Rpc<PluginUi['pickFolder']>;
+  /** Desde la 2.2.0 (`screen.awake`): Hebra aplica la petición con el controlador de la 1.8. */
+  readonly 'ui.keepScreenOn': Rpc<PluginUi['keepScreenOn']>;
 
   /**
    * El editor declarativo (L6, spec §6.1): Hebra llama a `provide` por el puerto

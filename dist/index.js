@@ -1,5 +1,5 @@
 /** Versión de la API que describen estos tipos (la del paquete). */
-export const PLUGIN_API_VERSION = '1.7.0';
+export const PLUGIN_API_VERSION = '1.8.0';
 // ---- Plataforma y capacidades (§5.3, §7) ----
 export const PLUGIN_PLATFORMS = ['macos', 'ios', 'linux', 'windows', 'android', 'web'];
 /**
@@ -19,7 +19,8 @@ export const PLUGIN_CAPABILITIES = [
     'secrets',
     'tcp',
     'notify.system',
-    'background'
+    'background',
+    'screen.awake'
 ];
 /**
  * Desde la 1.3. Lo que el ANFITRIÓN sabe hacer, que también se pregunta con `api.has()`.

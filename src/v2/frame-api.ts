@@ -926,6 +926,15 @@ export function createFrameApi(options: CreateFrameApiOptions): HebraPluginApi {
     },
     pickFolder() {
       return client.rpc('ui.pickFolder', []);
+    },
+    keepScreenOn(viewId, on) {
+      // Declaración, plataforma y propiedad de la vista las juzga Hebra (mismos errores que la 1.8).
+      // Devuelve una promesa rechazada (no lanza en síncrono), como la 1.8.
+      try {
+        return client.rpc('ui.keepScreenOn', [text(viewId, 'El id de la vista'), on === true]);
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
   };
 

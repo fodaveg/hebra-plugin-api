@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra. El paquete es la versión `2.1.0` (sin publicar: la etiqueta la decide David; la 2.1.0 añade `clickModifier` a las decoraciones) y lleva DOS APIs que conviven: la 1.x de siempre en la raíz (`1.7.0`, no cambia) y la 2.0 en `hebra-plugin-api/v2` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra. El paquete es la versión `2.2.0` (sin publicar: la etiqueta la decide David; la 2.2.0 añade `ui.keepScreenOn` y la capacidad `screen.awake` a la 2.x; la 2.1.0 añadió `clickModifier` a las decoraciones) y lleva DOS APIs que conviven: la 1.x de siempre en la raíz (`1.8.0`) y la 2.0 en `hebra-plugin-api/v2` (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la 1.x de Hebra no es la de los tipos, si la 2.0 de Hebra no es la de `v2`, o si la versión de `package.json` no es la de la 2.0 (la mayor de las dos; la etiqueta es `v2.0.0`), y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0` (1.x) o `#v2.0.0` (1.x y 2.0).
 
@@ -12,7 +12,7 @@ Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de
 | `hebra-plugin-api/shared`     | La lista de módulos que presta Hebra (`@codemirror/state`, `@codemirror/view`, `@codemirror/language`, `@lezer/common`, `@lezer/highlight`) y la clave de su registro global. |
 | `hebra-plugin-api/build`      | `hebraShared()` para esbuild y `hebraSharedRollup()` para Rollup, Rolldown y Vite: cada import de un módulo prestado lee el de Hebra en vez de empaquetar otra copia.         |
 | `hebra-plugin-api/testing`    | `createFakePluginApi(options)`: una API en memoria para probar un plugin sin Hebra.                                                                                           |
-| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.1.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
+| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.2.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
 | `hebra-plugin-api/v2/testing` | `createFakePluginApiV2(options)`: el host falso de la 2.0.                                                                                                                    |
 
 Los tipos son TypeScript sin compilar (`src/`); el código que importa Node o empaqueta esbuild sale de `dist/` en el paquete publicado.
@@ -42,6 +42,7 @@ export async function activate(api: HebraPluginApi): Promise<void> {
 - **`ui.openExternal(url)`** con confirmación: la primera vez que un plugin abre un dominio, Hebra enseña la URL entera y pregunta (casilla «No volver a preguntar para este dominio», por dispositivo). Resuelve `'opened'` o `'cancelled'`; solo `https:` y `http:` (§5.5.2).
 - **`notify.sound`**: capacidad nueva, solo con `apiVersion` 2.x. `register(id, { bytes, mime })` una vez y `play(id, { volume })` después; lo reproduce Hebra, el usuario puede silenciarlo (`'muted'`) (§5.5.6, punto 3).
 - **`network.images`** en `hebra.json`: hosts exactos `https` desde los que las superficies pueden cargar `<img>`; la CSP del marco solo permite `'self'`, `data:` y `blob:` más esos hosts (§5.5.6, punto 1).
+- **`ui.keepScreenOn(viewId, on)` y `screen.awake` (desde la 2.2.0).** Lo mismo que en la 1.8 (más abajo): la pantalla del iPhone o del iPad no se apaga sola mientras la vista `viewId` se ve. Decláralo en `hebra.json` (mejor en `capabilities.optional`) y pregunta `api.has('screen.awake')`, que da `true` solo en iPhone e iPad con la capacidad declarada. Fuera de ellos resuelve `{ held: false }` sin lanzar; sin declarar, `capability-not-declared`; con una vista que no es de tu plugin, `invalid-argument`. Se suelta solo al cerrar la vista, al dejar de verse (pídelo otra vez al mostrarla) y al apagar el plugin; en segundo plano se apaga y vuelve sola. Con `await ui.keepScreenOn(id, false)` lo sueltas tú. Host falso: `recorded.screenAwakeCalls`, solo con `platform: 'ios'`. Un plugin con `apiVersion` `^2.2.0` exige una Hebra con la 2.2.0.
 - **Otros cambios que el compilador señala:** `api.clipboard.writeText` (lo escribe Hebra, con gesto del usuario; sin él, `user-activation-required`), `shared` vacío en el manifiesto, y los errores no incluyen `extension-rechazada`.
 
 ## Un plugin mínimo
@@ -198,6 +199,16 @@ const row = `| Espada | ${icon('Espada', 'https://render.guildwars2.com/file/…
 - El usuario puede apagar «Cargar imágenes remotas» en Ajustes: entonces la nota enseña el texto alternativo y `api.has('markdown.image.remote')` sigue dando `true` (dice lo que Hebra sabe hacer, no lo que el usuario ha elegido).
 - La petición la hace el motor web directamente al servidor de la imagen, sin `Referer` y sin los parámetros de rastreo de la URL (`utm_*`, `fbclid`, `gclid`…, que la nota conserva). Hebra no la descarga ni la guarda como adjunto, así que sin red no se ve.
 - Host falso: `fake.api.has('markdown.image.remote')` da `true`.
+
+## Novedades de la 1.8: pantalla encendida (sin publicar)
+
+Solo se añade. Capacidad `screen.awake` y `ui.keepScreenOn(viewId, on)`: la pantalla del iPhone o del iPad no se apaga sola mientras la vista `viewId` (el `id` con el que la registraste) está a la vista.
+
+- Declárala en `hebra.json` (mejor en `capabilities.optional`: en un Hebra anterior se ignora; en `required` el plugin sería incompatible allí) y pregunta `api.has('screen.awake')`.
+- Fuera de iPhone e iPad, `keepScreenOn` resuelve `{ held: false }` sin lanzar. Sin declarar: `capability-not-declared`.
+- Es idempotente. `await ui.keepScreenOn(id, false)` sin bloqueo resuelve `{ held: false }`.
+- Hebra lo suelta solo al cerrar la vista, al dejar de verse, al pasar la app a segundo plano (y lo re-aplica al volver si la vista sigue visible) y al apagar el plugin. Tras dejar de verse la vista, pídelo otra vez al mostrarla (`mount`, `onVisibilityChange(true)`).
+- Host falso: `recorded.screenAwakeCalls`; solo `platform: 'ios'` lo acepta.
 
 ## Novedades de la 1.7: una vista del plugin como contenido de pestaña (sin publicar)
 

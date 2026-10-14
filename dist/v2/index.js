@@ -1,5 +1,5 @@
 /** La versión de la API que describe esta entrada (la de Hebra: `HEBRA_PLUGIN_API_VERSION_V2`). */
-export const PLUGIN_API_VERSION = '2.1.0';
+export const PLUGIN_API_VERSION = '2.2.0';
 /** Los códigos de `PluginApiErrorCode`, como valor (los comprueba `isPluginApiError`). */
 export const PLUGIN_API_ERROR_CODES = [
     'capability-not-declared',

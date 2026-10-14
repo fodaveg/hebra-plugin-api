@@ -132,6 +132,8 @@ export interface FakePluginApi {
     /** Cada `notify.system` aceptado (1.5), en orden, con `urgency` y `silent` tal como
      *  los pasó el plugin (`undefined` si no los indicó). */
     systemNotifications: PluginSystemNotifyInput[];
+    /** Desde la 1.8: cada `ui.keepScreenOn(viewId, on)` aceptado (en iOS), en orden. */
+    screenAwakeCalls: { viewId: string; on: boolean }[];
   };
   /** Dispara un cambio de la biblioteca a los `vault.onChange`. */
   emitVaultChange(change: PluginVaultChange): void;
@@ -323,6 +325,8 @@ function available(capability: PluginCapability, platform: PluginPlatform): bool
   if (capability === 'tcp' || capability === 'notify.system') return DESKTOP.includes(platform);
   // `http` está también en la web (por el relé de Hebra), con sus límites en `http`.
   if (capability === 'background') return platform !== 'web';
+  // Desde la 1.8: solo iPhone e iPad (`isIdleTimerDisabled`).
+  if (capability === 'screen.awake') return platform === 'ios';
   return true;
 }
 
@@ -464,7 +468,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     userHostPrompts: [],
     userHostReasons: [],
     remoteBlobDownloads: [],
-    systemNotifications: []
+    systemNotifications: [],
+    screenAwakeCalls: []
   };
   const vaultListeners = new Set<(change: PluginVaultChange) => void>();
   /** El llavero de ESTE plugin (en Hebra, cuentas `plugin:<id>:<clave>` del dispositivo). */
@@ -541,6 +546,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
 
   // ---- Vistas `'main'` (1.3): lo que Hebra hace con la pantalla principal ----
   const viewTitles = new Map<string, string>();
+  /** Vistas con `keepScreenOn(…, true)` vigente (el host falso no las suelta solo). */
+  const screenAwakeHeld = new Set<string>();
   const mainViews = new Map<string, FakeMainView>();
   /** La vista que «ocupa la pantalla principal» y la sección que enseña. */
   let openMain: { viewId: string; sectionId: string } | null = null;
@@ -960,6 +967,23 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
         return () => {};
       },
       openExternal: async () => {},
+      keepScreenOn: async (viewId, on) => {
+        if (!declared.has('screen.awake')) {
+          throw new FakePluginApiError('capability-not-declared', '«screen.awake» sin declarar.');
+        }
+        // Fuera de iPhone e iPad: sin error y sin bloqueo.
+        if (!available('screen.awake', platform)) return { held: false };
+        if (!viewTitles.has(viewId)) {
+          throw new FakePluginApiError(
+            'invalid-argument',
+            `«${viewId}» no es una vista de este plugin.`
+          );
+        }
+        recorded.screenAwakeCalls.push({ viewId, on });
+        if (on) screenAwakeHeld.add(viewId);
+        else screenAwakeHeld.delete(viewId);
+        return { held: on };
+      },
       pickFolder: async () => null
     },
     editor: {

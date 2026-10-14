@@ -41,6 +41,7 @@ import type {
   PluginCommandDefinition,
   PluginDeviceStorage as PluginDeviceStorageV1,
   PluginHostFeature,
+  PluginKeepScreenOnResult,
   PluginMainViewDefinition,
   PluginMenuEntry,
   PluginModalHandle,
@@ -147,7 +148,7 @@ export type {
 export type PluginApiVersion = `2.${number}.${number}`;
 
 /** La versión de la API que describe esta entrada (la de Hebra: `HEBRA_PLUGIN_API_VERSION_V2`). */
-export const PLUGIN_API_VERSION = '2.1.0';
+export const PLUGIN_API_VERSION = '2.2.0';
 
 // ---- Capacidades (§5.3 de la spec; §5.5 para lo nuevo) ----
 
@@ -326,6 +327,24 @@ export interface PluginUi {
    */
   openExternal(url: string): Promise<'opened' | 'cancelled'>;
   pickFolder(): Promise<string | null>;
+  /**
+   * Desde la 2.2.0 (capacidad `screen.awake`: decláralo en `hebra.json`; comprueba antes
+   * `api.has('screen.awake')`). Mismo comportamiento que `ui.keepScreenOn` de la 1.8: pide que
+   * la pantalla NO se apague sola mientras la vista `viewId` (el `id` con el que la registraste,
+   * de cualquier `placement`) esté a la vista. `on: true` lo pide y `on: false` lo suelta; es
+   * idempotente y un `false` sobre una vista sin bloqueo resuelve `{ held: false }`.
+   *
+   * Solo existe en iPhone e iPad. En el resto, con la capacidad declarada, resuelve
+   * `{ held: false }` sin lanzar (y `has('screen.awake')` da `false`). Sin declararla rechaza
+   * con `capability-not-declared`; una vista que no es de este plugin, con `invalid-argument`.
+   *
+   * `held: true` = Hebra aceptó la petición; no dice que la pantalla esté bloqueada AHORA.
+   * Hebra la suelta sola al cerrar la vista, al dejar de verse (y ANULA la petición: al volver
+   * a mostrarla hay que pedirla de nuevo, p. ej. en `mount`) y al desactivar o descargar el
+   * plugin. Con la app en segundo plano no se bloquea, y al volver con la vista aún visible se
+   * re-aplica sola.
+   */
+  keepScreenOn(viewId: string, on: boolean): Promise<PluginKeepScreenOnResult>;
 }
 
 // ---- editor declarativo (capacidad `editor`, §6 y §8.5 de la spec) ----

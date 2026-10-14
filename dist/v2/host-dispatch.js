@@ -733,6 +733,7 @@ export function createFrameDispatcher(options) {
             return null;
         },
         'ui.pickFolder': () => ui.pickFolder(),
+        'ui.keepScreenOn': (viewId, on) => ui.keepScreenOn(text(viewId, 'El id de la vista'), on === true),
         'editor.registerDecorations': (rawHandle, raw) => {
             const handle = newHandle(rawHandle);
             const editor = editorHost('editor.registerDecorations');
