@@ -1,6 +1,7 @@
 import { isPluginApiError } from './index.js';
 import { PLUGIN_FRAME_SUBSCRIBABLE_TOPICS } from './protocol.js';
 import { PLUGIN_EDITOR_LIMITS } from './editor.js';
+import { cloneTabViewState, tabViewStateProblem, tabViewTitleProblem, tabViewKeyProblem } from '../tab-view-state.js';
 import { frameApiError, frameError, serializeFrameError } from './wire.js';
 export { frameApiError, frameError, serializeFrameError } from './wire.js';
 function notYet(what) {
@@ -20,6 +21,7 @@ export class PluginFrameClient {
     #callbacks = new Map();
     /** Los callbacks cuya respuesta es un dato estructurado (`provide` del editor). */
     #dataCallbacks = new Set();
+    #callbackCleanups = new Map();
     #topics = new Map();
     #booted = false;
     #closed = false;
@@ -95,13 +97,16 @@ export class PluginFrameClient {
     }
     /**
      * Guarda `fn` para que Hebra la llame por su número. Con `data`, lo que `fn` devuelve vuelve
-     * a Hebra tal cual (clonado estructurado); sin él, solo valores simples.
+     * a Hebra tal cual (clonado estructurado); sin él, solo valores simples. `dispose` suelta
+     * recursos locales al retirar el callback o cerrar el puerto.
      */
     callback(fn, options) {
         const callback = this.#nextCallback++;
         this.#callbacks.set(callback, fn);
         if (options?.data === true)
             this.#dataCallbacks.add(callback);
+        if (options?.dispose)
+            this.#callbackCleanups.set(callback, options.dispose);
         return { callback };
     }
     /** Olvida una función guardada (su registro se dio de baja). */
@@ -110,6 +115,14 @@ export class PluginFrameClient {
             return;
         this.#callbacks.delete(ref.callback);
         this.#dataCallbacks.delete(ref.callback);
+        const cleanup = this.#callbackCleanups.get(ref.callback);
+        this.#callbackCleanups.delete(ref.callback);
+        try {
+            cleanup?.();
+        }
+        catch (error) {
+            this.fault('al soltar una superficie', error);
+        }
     }
     /** Escucha un tema de `event`. Devuelve cómo dejar de escuchar. */
     on(topic, listener) {
@@ -136,6 +149,8 @@ export class PluginFrameClient {
             entry.reject(frameApiError('plugin-disposed', 'El plugin se ha apagado.'));
         }
         this.#pending.clear();
+        for (const callback of this.#callbackCleanups.keys())
+            this.release({ callback });
         this.#callbacks.clear();
         this.#dataCallbacks.clear();
         this.#topics.clear();
@@ -393,33 +408,61 @@ export function createFrameApi(options) {
         return {};
     };
     /** La función única que Hebra llama para montar, avisar de visibilidad y desmontar. */
-    const surfaceCallback = (mountFn) => {
+    const surfaceCallback = (mountFn, cleanupOnRelease = false) => {
         const live = new Map();
+        const close = (surfaceId) => {
+            const entry = live.get(surfaceId);
+            live.delete(surfaceId);
+            try {
+                entry?.unmount?.();
+            }
+            finally {
+                options.surfaces.close(surfaceId);
+            }
+        };
         return client.callback((call) => {
             const access = options.surfaces;
             if (call.op === 'mount') {
                 const el = access.open(call.ticket);
-                live.set(call.ticket.surfaceId, mountFn(el, call));
+                try {
+                    live.set(call.ticket.surfaceId, mountFn(el, call));
+                }
+                catch (error) {
+                    access.close(call.ticket.surfaceId);
+                    throw error;
+                }
                 return null;
             }
             if (call.op === 'visible') {
                 live.get(call.surfaceId)?.visible?.(call.visible === true);
                 return null;
             }
-            const entry = live.get(call.surfaceId);
-            live.delete(call.surfaceId);
-            try {
-                entry?.unmount?.();
-            }
-            finally {
-                access.close(call.surfaceId);
-            }
+            close(call.surfaceId);
             return null;
-        });
+        }, cleanupOnRelease
+            ? {
+                dispose() {
+                    // Al apagar no habrá respuesta del host: cerrar también los montajes locales.
+                    for (const id of live.keys()) {
+                        try {
+                            close(id);
+                        }
+                        catch (error) {
+                            client.fault('desmontar pestaña', error);
+                        }
+                    }
+                }
+            }
+            : undefined);
     };
     const tooltipOff = new WeakMap();
     let menuRefs = [];
     const noticeRefs = [];
+    const rejectTabProblem = (problem) => {
+        if (problem)
+            throw frameApiError('invalid-argument', problem);
+    };
+    const tabViewHandles = new Map();
     const ui = {
         registerView(view) {
             surfacesOrThrow('ui.registerView');
@@ -430,11 +473,87 @@ export function createFrameApi(options) {
             text(view.title, 'El título de la vista');
             text(view.icon, 'El icono de la vista');
             const placement = view.placement;
-            if (placement === 'tab')
-                throw notYet('ui.registerView (vistas de pestaña)');
             let wire;
             let mounted;
-            if (placement === 'main') {
+            if (placement === 'tab') {
+                if (tabViewHandles.has(id))
+                    throw frameApiError('invalid-argument', 'Ya hay una vista de pestaña con ese id.');
+                const tab = view;
+                fn(tab.mount, '`mount`');
+                wire = { id, title: tab.title, icon: tab.icon, placement: 'tab' };
+                mounted = (el, call) => {
+                    if (!call.tab)
+                        throw frameApiError('invalid-argument', 'Falta el contexto de la pestaña.');
+                    const { mountId, key } = call.tab;
+                    let state = cloneTabViewState(call.tab.state);
+                    let alive = true;
+                    el.classList.add('hebra-module-view-content', 'hebra-module-view-tab-content');
+                    el.dataset.key = key;
+                    el.parentElement?.classList.add('hebra-module-view', 'hebra-module-view-tab');
+                    let result;
+                    try {
+                        result = tab.mount(el, {
+                            key,
+                            get state() {
+                                return cloneTabViewState(state);
+                            },
+                            setState(value) {
+                                if (!alive)
+                                    return;
+                                rejectTabProblem(tabViewStateProblem(value));
+                                state = cloneTabViewState(value);
+                                void client
+                                    .rpc('ui.tabView.setState', [mountId, state])
+                                    .catch((e) => client.fault('ui.tabView.setState', e));
+                            },
+                            setTitle(title) {
+                                if (!alive)
+                                    return;
+                                rejectTabProblem(tabViewTitleProblem(title));
+                                void client
+                                    .rpc('ui.tabView.setTitle', [mountId, title])
+                                    .catch((e) => client.fault('ui.tabView.setTitle', e));
+                            }
+                        });
+                    }
+                    catch (error) {
+                        alive = false;
+                        throw error;
+                    }
+                    // El contrato exige mount síncrona. Consumir también una promesa rechazada para
+                    // que un plugin incorrecto no deje un rechazo suelto en su marco.
+                    if (result && typeof result.then === 'function') {
+                        alive = false;
+                        void Promise.resolve(result).catch(() => { });
+                        throw frameApiError('invalid-argument', 'El montaje de pestaña tiene que ser síncrono.');
+                    }
+                    const entry = sectionEntry(result);
+                    return {
+                        unmount() {
+                            alive = false;
+                            entry.unmount?.();
+                        }
+                    };
+                };
+            }
+            else if (placement === 'home') {
+                if (!snapshot.has['ui.view.home'])
+                    throw frameApiError('capability-not-available', 'Este Hebra no ofrece vistas de Inicio.');
+                const home = view;
+                fn(home.mount, '`mount`');
+                wire = { id, title: home.title, icon: home.icon, placement: 'home' };
+                mounted = (el) => {
+                    el.classList.add('hebra-module-view-content', 'hebra-module-view-home-content');
+                    el.parentElement?.classList.add('hebra-module-view', 'hebra-module-view-home');
+                    const result = home.mount(el);
+                    if (result && typeof result.then === 'function') {
+                        void Promise.resolve(result).catch(() => { });
+                        throw frameApiError('invalid-argument', 'El montaje de Inicio tiene que ser síncrono.');
+                    }
+                    return sectionEntry(result);
+                };
+            }
+            else if (placement === 'main') {
                 const main = view;
                 fn(main.mountSection, '`mountSection`');
                 wire = {
@@ -461,11 +580,32 @@ export function createFrameApi(options) {
                     return { unmount: () => panel.unmount?.() };
                 };
             }
+            const forgetTab = () => {
+                // Un rechazo o una baja antiguos no retiran la reserva de un registro posterior.
+                if (tabViewHandles.get(id) === handle)
+                    tabViewHandles.delete(id);
+            };
             const handle = register('ui.registerView', (h) => {
-                const surface = surfaceCallback(mounted);
+                const surface = surfaceCallback(mounted, placement === 'tab' || placement === 'home');
                 return { args: [h, { ...wire, surface }], refs: [surface] };
-            });
-            return releaser(handle);
+            }, forgetTab);
+            if (placement !== 'tab' && placement !== 'home')
+                return releaser(handle);
+            if (placement === 'tab')
+                tabViewHandles.set(id, handle);
+            let registered = true;
+            return () => {
+                if (!registered)
+                    return;
+                registered = false;
+                forgetTab();
+                // El host manda unmount antes de contestar a la baja. Mantener el callback hasta
+                // esa respuesta permite limpiar los montajes, sin aceptar nuevas aperturas.
+                void client
+                    .rpc('handle.release', [handle])
+                    .catch(() => { })
+                    .finally(() => dropHandle(handle));
+            };
         },
         revealView(id, revealOptions) {
             void client
@@ -819,8 +959,17 @@ export function createFrameApi(options) {
                 .rpc('workspace.openNote', [id, openOptions])
                 .catch((e) => client.fault('workspace.openNote', e));
         },
-        openView() {
-            throw notYet('workspace.openView');
+        openView(id, openOptions) {
+            surfacesOrThrow('workspace.openView');
+            if (!tabViewHandles.has(id))
+                throw frameApiError('invalid-argument', 'No es una vista de pestaña registrada.');
+            text(id, 'El id de la vista');
+            rejectTabProblem(tabViewKeyProblem(openOptions?.key));
+            rejectTabProblem(tabViewStateProblem(openOptions?.state));
+            rejectTabProblem(tabViewTitleProblem(openOptions?.title));
+            void client
+                .rpc('workspace.openView', [id, openOptions])
+                .catch((e) => client.fault('workspace.openView', e));
         },
         selectFolder(id) {
             void client
@@ -1046,7 +1195,8 @@ export function createFrameApi(options) {
         setProperty: (body, key, value) => options.markdown.setProperty(body, key, value),
         frontmatter: (body) => options.markdown.frontmatter(body),
         withTitle: (body, title) => options.markdown.withTitle(body, title),
-        frontmatterRange: (body) => options.markdown.frontmatterRange(body)
+        frontmatterRange: (body) => options.markdown.frontmatterRange(body),
+        links: (body) => options.markdown.links(body)
     };
     return Object.freeze({
         apiVersion: snapshot.apiVersion,

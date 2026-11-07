@@ -191,7 +191,7 @@ export function createFakePluginApiV2(options = {}) {
     const snapshot = frameBootSnapshot({
         api: served,
         dispatcher,
-        apiVersion: '2.2.0',
+        apiVersion: '2.4.0',
         plugin: base.plugin,
         capabilityError,
         visible: initialVisible,

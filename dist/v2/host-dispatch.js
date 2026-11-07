@@ -155,9 +155,11 @@ export function frameBootSnapshot(input) {
     const notYet = new Set(PLUGIN_FRAME_NOT_YET_SERVED);
     if (input.visual !== true) {
         notYet.add('ui.view.main');
+        notYet.add('ui.view.tab');
         notYet.add('notify.sound');
     }
     const has = {};
+    has['ui.view.home'] = input.visual === true && input.home === true;
     for (const name of [...PLUGIN_CAPABILITIES, ...PLUGIN_HOST_FEATURES]) {
         has[name] = !notYet.has(name) && api.has(name);
     }
@@ -239,6 +241,9 @@ export function createFrameDispatcher(options) {
     const { api, emit, report } = options;
     let disposed = false;
     const handles = new Map();
+    // Emitidos por ESTE despachador, nunca por el mensaje: solo alcanzan montajes propios.
+    const tabMounts = new Map();
+    let nextTabMount = 1;
     const subscriptions = new Map();
     const undos = new Map();
     let nextUndo = 1;
@@ -381,24 +386,25 @@ export function createFrameDispatcher(options) {
      * crea ya; cuando está listo, el marco de ejecución monta (`surface` con `op: 'mount'`). Un
      * fallo del plugin al montar se anota con su id y la superficie queda vacía.
      */
-    const surfaceInto = (el, ref, spec, extra = {}) => {
+    const surfaceInto = (el, ref, spec, extra = {}, propagateFault = false) => {
         const surface = services('superficie').createSurface(el, spec);
         let surfaceId = null;
         let gone = false;
         const call = (value, expectResult) => options.invoke(ref, [value], expectResult);
-        surface.ready.then((ticket) => {
+        const ready = surface.ready.then(async (ticket) => {
             if (gone || disposed)
                 return;
             surfaceId = ticket.surfaceId;
-            call({ op: 'mount', ticket, ...extra }, true).catch((error) => {
+            await call({ op: 'mount', ticket, ...extra }, true);
+        });
+        // Las pestañas tienen estado de error y Reintentar: lo observa el registro de módulos.
+        if (!propagateFault)
+            void ready.catch((error) => {
                 if (!gone && !disposed)
                     report(`montar «${spec.title.slice(0, 60)}»`, error);
             });
-        }, (error) => {
-            if (!gone && !disposed)
-                report(`superficie «${spec.title.slice(0, 60)}»`, error);
-        });
         return {
+            ready,
             visible(visible) {
                 if (surfaceId === null || gone)
                     return;
@@ -479,6 +485,80 @@ export function createFrameDispatcher(options) {
             const title = text(view.title, 'El título de la vista');
             const icon = text(view.icon, 'El icono de la vista');
             const ref = callbackRef(view.surface, 'surface');
+            if (view.placement === 'home') {
+                if (!options.ui?.registerHomeView)
+                    throw frameApiError('capability-not-available', 'Este Hebra no ofrece vistas de Inicio.');
+                const mounted = new Set();
+                const unregister = options.ui.registerHomeView({
+                    id,
+                    title,
+                    icon,
+                    placement: 'home',
+                    mount(el) {
+                        const surface = surfaceInto(el, ref, { kind: 'view', title, fit: 'fill' }, {}, true);
+                        const unmount = () => {
+                            mounted.delete(unmount);
+                            surface.unmount();
+                        };
+                        mounted.add(unmount);
+                        return {
+                            unmount,
+                            ready: surface.ready.catch((error) => {
+                                unmount();
+                                throw error;
+                            })
+                        };
+                    }
+                });
+                return keep(handle, {
+                    release() {
+                        for (const unmount of mounted)
+                            unmount();
+                        unregister();
+                    }
+                });
+            }
+            if (view.placement === 'tab') {
+                const mounted = new Map();
+                const unregister = ui.registerView({
+                    id,
+                    title,
+                    icon,
+                    placement: 'tab',
+                    mount(el, ctx) {
+                        const mountId = nextTabMount++;
+                        tabMounts.set(mountId, ctx);
+                        let surface;
+                        try {
+                            surface = surfaceInto(el, ref, { kind: 'tab', title, fit: 'fill' }, { tab: { mountId, key: ctx.key, state: ctx.state } }, true);
+                        }
+                        catch (error) {
+                            tabMounts.delete(mountId);
+                            throw error;
+                        }
+                        const unmount = () => {
+                            tabMounts.delete(mountId);
+                            mounted.delete(mountId);
+                            surface.unmount();
+                        };
+                        mounted.set(mountId, unmount);
+                        return {
+                            unmount,
+                            ready: surface.ready.catch((error) => {
+                                unmount();
+                                throw error;
+                            })
+                        };
+                    }
+                });
+                return keep(handle, {
+                    release() {
+                        for (const unmount of mounted.values())
+                            unmount();
+                        unregister();
+                    }
+                });
+            }
             if (view.placement === 'main') {
                 const unregister = ui.registerView({
                     id,
@@ -808,6 +888,20 @@ export function createFrameDispatcher(options) {
                 throw invalid('blobPut recibe un Uint8Array.');
             return vault.blobPut(bytes, putOptions);
         },
+        'ui.tabView.setState': (mountId, state) => {
+            // Una llamada ya en vuelo al desmontar no hace nada; el contexto valida el JSON.
+            tabMounts.get(mountId)?.setState(state);
+            return null;
+        },
+        'ui.tabView.setTitle': (mountId, title) => {
+            tabMounts.get(mountId)?.setTitle(title);
+            return null;
+        },
+        'workspace.openView': (id, openOptions) => {
+            workspace.openView(id, openOptions);
+            recheckActive();
+            return null;
+        },
         'workspace.openNote': (id, openOptions) => {
             workspace.openNote(id, openOptions);
             // Ir a otra nota a propósito suelta la fijada (T10): la instantánea lo refleja.
@@ -908,6 +1002,7 @@ export function createFrameDispatcher(options) {
             for (const entry of [...handles.values()])
                 release(() => entry.release(), 'al apagar');
             handles.clear();
+            tabMounts.clear();
             for (const off of [...subscriptions.values()])
                 release(off, 'al apagar');
             subscriptions.clear();

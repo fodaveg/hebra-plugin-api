@@ -39,6 +39,8 @@ import {
   type PluginFolder,
   type PluginFile,
   type PluginFrontmatterRange,
+  type PluginMarkdownLink,
+  type PluginMarkdownLinkTarget,
   type PluginHttpRequest,
   type PluginHttpResponse,
   type PluginMainViewDefinition,
@@ -67,7 +69,18 @@ class FakePluginApiError extends Error {
 
 /** Una nota sembrada: el cuerpo, o el cuerpo y un título que no sale de él (lo que deja
  *  la importación de una nota sin `title:` ni `# …`). */
-export type FakeSeedNote = string | { body: string; title: string };
+export type FakeSeedNote =
+  | string
+  | {
+      body: string;
+      title?: string;
+      /** Sembrada en el archivo (`archivedAt`): sale en el ámbito `archive` de `notesPage`. */
+      archivedAt?: number;
+      /** Sembrada en la papelera (`trashedAt`): no sale en ningún ámbito de `notesPage`. */
+      trashedAt?: number;
+      /** Sembrada como copia de conflicto de esa nota (`conflictOf` del listado). */
+      conflictOf?: string;
+    };
 
 export interface FakePluginApiOptions {
   id?: string;
@@ -359,6 +372,176 @@ function frontmatterRangeOf(body: string): PluginFrontmatterRange | null {
   return null;
 }
 
+/** Aproximación de `markdown.links` de Hebra (sin su lector de Markdown): wikilinks, `![[…]]`
+ *  e imágenes con destino relativo, fuera del frontmatter, de las vallas y el código en línea,
+ *  de las etiquetas HTML y de los comentarios `%%…%%`. Un test de Hebra compara esta función con
+ *  la real sobre una batería de cuerpos; lo raro (tablas, escapes) puede diferir. */
+function linksOf(body: string): PluginMarkdownLink[] {
+  if (typeof body !== 'string' || body === '') return [];
+  const masked = new Array<boolean>(body.length).fill(false);
+  const mask = (from: number, to: number): void => {
+    for (let i = from; i < Math.min(to, body.length); i += 1) masked[i] = true;
+  };
+  const frontmatter = frontmatterRangeOf(body);
+  if (frontmatter) mask(0, frontmatter.end);
+  // Vallas de código: de la línea de apertura (``` o ~~~) a la de cierre, o al final.
+  let fence: string | null = null;
+  for (let cursor = 0; cursor < body.length;) {
+    const newline = body.indexOf('\n', cursor);
+    const lineEnd = newline < 0 ? body.length : newline + 1;
+    const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(body.slice(cursor, lineEnd))?.[1];
+    if (fence === null && marker) fence = marker[0]!;
+    else if (fence !== null && marker && marker[0] === fence) {
+      mask(cursor, lineEnd);
+      fence = null;
+      cursor = lineEnd;
+      continue;
+    }
+    if (fence !== null) mask(cursor, lineEnd);
+    cursor = lineEnd;
+  }
+  for (const match of body.matchAll(/(`+)[^`\n]*?\1(?!`)/gu)) {
+    if (!masked[match.index]) mask(match.index, match.index + match[0].length);
+  }
+  for (const match of body.matchAll(/<!--[\s\S]*?(?:-->|$)|<\/?[A-Za-z][^>\n]*>/gu)) {
+    if (!masked[match.index]) mask(match.index, match.index + match[0].length);
+  }
+  const comments: Array<[number, number]> = [];
+  let open = -1;
+  for (let cursor = body.indexOf('%%'); cursor >= 0; cursor = body.indexOf('%%', cursor + 2)) {
+    if (masked[cursor] || body[cursor - 1] === '\\') continue;
+    if (open < 0) open = cursor;
+    else {
+      comments.push([open, cursor + 2]);
+      open = -1;
+    }
+  }
+  // Sin cerrar, el comentario llega hasta el final.
+  if (open >= 0) comments.push([open, body.length]);
+  const inComment = (from: number, to: number): boolean =>
+    comments.some(([start, end]) => from < end && Math.max(to, from + 1) > start);
+  const links: PluginMarkdownLink[] = [];
+  const shaOnly = /^sha256:[0-9a-f]{64}$/iu;
+  const push = (
+    kind: PluginMarkdownLink['kind'],
+    from: number,
+    to: number,
+    targetFrom: number,
+    targetTo: number,
+    note: string,
+    alias: string | null,
+    heading: string | null,
+    blockId: string | null
+  ): void => {
+    const ref = note.trim();
+    let targetKind: PluginMarkdownLinkTarget;
+    let target: string | null = null;
+    let targetPath: string | null = null;
+    if (ref === '') targetKind = heading !== null || blockId !== null ? 'self-heading' : 'empty';
+    else if (/^(?:task|list):/u.test(ref)) targetKind = 'lumbre';
+    else if (/^\{\{[^{}]*\}\}$/u.test(ref)) targetKind = 'template';
+    else if (ref.startsWith('id:')) {
+      target = ref.slice(3).trim();
+      targetKind = target ? 'note-id' : 'empty';
+    } else if (ref.toLowerCase().startsWith('sha256:')) {
+      targetKind = shaOnly.test(ref) ? 'hash' : 'empty';
+      if (targetKind === 'hash') target = ref.slice(7).trim().toLowerCase();
+    } else {
+      const slash = ref.lastIndexOf('/');
+      const name = ref.slice(slash + 1).trim();
+      targetPath =
+        slash < 0
+          ? null
+          : ref
+              .slice(0, slash)
+              .split('/')
+              .map((segment) => segment.trim().toLowerCase())
+              .filter(Boolean)
+              .join('/') || null;
+      const extension = /\.([^.\s/]{1,8})$/u.exec(name);
+      if (!name) targetKind = 'empty';
+      else if (extension && /\p{L}/u.test(extension[1]!) && extension[1]!.toLowerCase() !== 'md') {
+        targetKind = 'file';
+        target = name;
+      } else {
+        const title = (extension && /\p{L}/u.test(extension[1]!) ? name.slice(0, -3) : name)
+          .normalize('NFKC')
+          .trim()
+          .toLowerCase();
+        targetKind = title ? (targetPath === null ? 'note-title' : 'note-path') : 'empty';
+        if (title) target = title;
+      }
+    }
+    if (target === null) targetPath = null;
+    // Como Hebra: un comentario esconde el enlace, salvo un adjunto por hash.
+    if (targetKind !== 'hash' && inComment(from, to)) return;
+    links.push({
+      kind,
+      from,
+      to,
+      targetFrom,
+      targetTo,
+      rawTarget: body.slice(targetFrom, targetTo),
+      target,
+      targetPath,
+      alias,
+      heading,
+      blockId,
+      targetKind
+    });
+  };
+  for (const match of body.matchAll(/(!?)\[\[([^\]\n]*)\]\]|!\[([^\]]*)\]\(([^()\r\n]*)\)/gu)) {
+    const from = match.index;
+    if (masked[from] || (from > 0 && body[from - 1] === '\\')) continue;
+    const to = from + match[0].length;
+    if (match[2] !== undefined) {
+      const inner = match[2];
+      const innerFrom = from + match[0].indexOf('[[') + 2;
+      // En una fila de tabla (la línea empieza por `|`) el alias se separa con `\|`.
+      const lineStart = body.lastIndexOf('\n', from) + 1;
+      const inTable = /^[ \t]*\|/u.test(body.slice(lineStart, from));
+      const pipe = inner.indexOf('|');
+      const cut = inTable && pipe > 0 && inner[pipe - 1] === '\\' ? pipe - 1 : pipe;
+      const destination = cut < 0 ? inner : inner.slice(0, cut);
+      const alias = pipe < 0 ? null : inner.slice(pipe + 1);
+      const hash = destination.indexOf('#');
+      const note = hash < 0 ? destination : destination.slice(0, hash);
+      const fragment = hash < 0 ? '' : destination.slice(hash + 1);
+      const blockId = fragment.startsWith('^') ? fragment.slice(1) || null : null;
+      const heading = fragment && !blockId ? fragment : null;
+      if (!note && !heading && !blockId) continue;
+      push(
+        match[1] ? 'embed' : 'wikilink',
+        from,
+        to,
+        innerFrom,
+        innerFrom + note.length,
+        note,
+        alias,
+        heading,
+        blockId
+      );
+    } else {
+      const destination = (match[4] ?? '').trim();
+      if (!destination || /^(?:[a-z][a-z0-9+.-]*:|#)/iu.test(destination)) continue;
+      const targetFrom =
+        from + match[0].indexOf('](') + 2 + (match[4]!.length - match[4]!.trimStart().length);
+      push(
+        'image',
+        from,
+        to,
+        targetFrom,
+        targetFrom + destination.length,
+        destination,
+        match[3] || null,
+        null,
+        null
+      );
+    }
+  }
+  return links;
+}
+
 /** `title:` del frontmatter (sin comillas) o el primer `# …`; `''` si no hay. */
 function titleOf(body: string): string {
   const range = frontmatterRangeOf(body);
@@ -480,6 +663,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     return key;
   };
   const notes = new Map<string, PluginNote>();
+  /** Las copias de conflicto: id de la copia -> id de la original. */
+  const conflictOfById = new Map<string, string>();
   let created = 0;
   let conflicts = 0;
   const now = (): number => Date.now();
@@ -517,8 +702,28 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
   };
   for (const [id, seed] of Object.entries(options.notes ?? {})) {
     if (typeof seed === 'string') put(id, seed, FAKE_ROOT_FOLDER_ID);
-    else put(id, seed.body, FAKE_ROOT_FOLDER_ID, seed.title);
+    else {
+      const note = put(id, seed.body, FAKE_ROOT_FOLDER_ID, seed.title);
+      if (seed.archivedAt !== undefined) note.archivedAt = seed.archivedAt;
+      if (seed.trashedAt !== undefined) note.trashedAt = seed.trashedAt;
+      if (seed.conflictOf !== undefined) conflictOfById.set(id, seed.conflictOf);
+    }
   }
+  /** Los ids de `folderId` y, con `subfolders`, los de todas sus descendientes. */
+  const folderScope = (folderId: string, subfolders: boolean): Set<string> => {
+    const ids = new Set([folderId]);
+    if (!subfolders) return ids;
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const folder of folders) {
+        if (folder.parentId !== null && ids.has(folder.parentId) && !ids.has(folder.id)) {
+          ids.add(folder.id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
+  };
   const folders: PluginFolder[] = [
     { id: FAKE_ROOT_FOLDER_ID, parentId: null, name: '', createdAt: 0, updatedAt: 0 }
   ];
@@ -1009,19 +1214,38 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
     vault: {
       libraryId: () => (requireCapability('vault.read'), 'biblioteca-de-prueba'),
       rootFolderId: () => (requireCapability('vault.read'), FAKE_ROOT_FOLDER_ID),
-      async notesPage() {
+      async notesPage(cursor, limit, scope) {
         requireCapability('vault.read');
+        // Como Hebra: `all` y `folder` dejan fuera las archivadas y las de la papelera;
+        // `archive` lista solo las archivadas que no están en la papelera. Páginas de hasta
+        // 200, con un cursor opaco (aquí, el desplazamiento).
+        const inFolders =
+          scope?.kind === 'folder' ? folderScope(scope.folderId, scope.subfolders === true) : null;
+        const matching = [...notes.values()].filter((note) =>
+          scope?.kind === 'archive'
+            ? note.archivedAt !== null && note.trashedAt === null
+            : note.archivedAt === null &&
+              note.trashedAt === null &&
+              (inFolders === null || inFolders.has(note.folderId))
+        );
+        const start = cursor === null ? 0 : Number(cursor);
+        if (!Number.isInteger(start) || start < 0) {
+          throw new FakePluginApiError('invalid-argument', 'El cursor de notesPage no es válido.');
+        }
+        const size = Math.min(Math.max(1, Math.trunc(limit)), 200);
+        const page = matching.slice(start, start + size);
         return {
-          items: [...notes.values()].map((note) => ({
+          items: page.map((note) => ({
             id: note.id,
             title: note.title,
             excerpt: '',
             createdAt: note.createdAt,
             updatedAt: note.updatedAt,
             favorite: note.favorite,
-            locked: note.locked
+            locked: note.locked,
+            conflictOf: conflictOfById.get(note.id) ?? null
           })),
-          nextCursor: null
+          nextCursor: start + size < matching.length ? String(start + size) : null
         };
       },
       async noteRead(id) {
@@ -1044,6 +1268,7 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
               updatedAt: note.updatedAt,
               favorite: note.favorite,
               locked: note.locked,
+              conflictOf: conflictOfById.get(note.id) ?? null,
               folderId: note.folderId,
               trashedAt: note.trashedAt,
               archivedAt: note.archivedAt,
@@ -1066,6 +1291,7 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
           // Como Hebra: la nota no se pisa; lo guardado va a una copia de conflicto.
           conflicts += 1;
           const copy = put(`${id}-conflicto-${conflicts}`, body, current.folderId);
+          conflictOfById.set(copy.id, id);
           return { outcome: 'redirected', id: copy.id, revision: { ...copy.revision } };
         }
         const saved = rewrite(current, body);
@@ -1356,7 +1582,8 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
       setProperty: () => notImplemented('markdown.setProperty'),
       frontmatter: () => null,
       withTitle: (body, title) => withTitleOf(body, title),
-      frontmatterRange: (body) => frontmatterRangeOf(body)
+      frontmatterRange: (body) => frontmatterRangeOf(body),
+      links: (body) => linksOf(body)
     },
     storage: (() => {
       let settings: unknown = null;

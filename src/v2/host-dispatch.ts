@@ -20,7 +20,7 @@ import {
   PLUGIN_HOST_FEATURES,
   type HebraPluginApi as HebraPluginApiV1,
   type PluginActiveNote,
-  type PluginHostFeature,
+  type PluginTabViewContext,
   type PluginJsonValue,
   type PluginRibbonHandle as PluginRibbonHandleV1,
   type PluginStatusBarItemDefinition,
@@ -31,6 +31,8 @@ import {
 } from './_v1/index';
 import { PLUGIN_EDITOR_LIMITS, sanitizeTriggers } from './editor';
 import type {
+  PluginHostFeature,
+  PluginHomeViewDefinition,
   PluginApiErrorCode,
   PluginApiErrorShape,
   PluginCapability,
@@ -52,7 +54,6 @@ import {
   type PluginFrameTopics,
   type PluginHostToFrame,
   type PluginSurfaceCall,
-  type PluginSurfaceCodeBlock,
   type PluginSurfaceRect,
   type PluginSurfaceTicket
 } from './protocol';
@@ -210,7 +211,7 @@ export function createFrameHostChannel(
 
 /** Qué se monta en una superficie (decide cómo se ajusta: `fill` al hueco, `auto` al contenido). */
 export interface PluginSurfaceSpec {
-  readonly kind: 'view' | 'section' | 'settings' | 'modal' | 'codeblock';
+  readonly kind: 'view' | 'tab' | 'section' | 'settings' | 'modal' | 'codeblock';
   readonly title: string;
   readonly fit: 'fill' | 'auto';
 }
@@ -230,6 +231,8 @@ export interface PluginHostSurface {
  * de estas llamadas responde `capability-not-available`.
  */
 export interface PluginFrameUiServices {
+  /** Registro de Inicio: solo el host API2, nunca la fachada heredada de la 1.x. */
+  registerHomeView?(view: PluginHomeViewDefinition): PluginUnregister;
   /** Crea el marco de una superficie DENTRO de `el` (un elemento de Hebra). */
   createSurface(el: HTMLElement, spec: PluginSurfaceSpec): PluginHostSurface;
   /** Un emergente de Hebra sobre una superficie; `text: null` lo quita. */
@@ -326,8 +329,10 @@ export interface PluginFrameSnapshotInput {
   capabilityError(capability: PluginCapability): PluginApiErrorShape | null;
   readonly visible: boolean;
   readonly notifyPermission: PluginNotifyPermission;
-  /** Hay servicios visuales (L5): sin ellos `ui.view.main` y `notify.sound` no se ofrecen. */
+  /** Hay servicios visuales (L5): sin ellos `ui.view.main`, `ui.view.tab` y `notify.sound` no se ofrecen. */
   readonly visual?: boolean;
+  /** El host tiene registro y montaje de Inicio (API2 2.3). */
+  readonly home?: boolean;
   /** El espejo de `storage.device` (L14); vacío sin él. */
   readonly device?: Readonly<Record<string, PluginJsonValue>>;
 }
@@ -343,9 +348,11 @@ export function frameBootSnapshot(input: PluginFrameSnapshotInput): PluginBootSn
   const notYet = new Set<string>(PLUGIN_FRAME_NOT_YET_SERVED);
   if (input.visual !== true) {
     notYet.add('ui.view.main');
+    notYet.add('ui.view.tab');
     notYet.add('notify.sound');
   }
   const has: Partial<Record<PluginCapability | PluginHostFeature, boolean>> = {};
+  has['ui.view.home'] = input.visual === true && input.home === true;
   for (const name of [...PLUGIN_CAPABILITIES, ...PLUGIN_HOST_FEATURES]) {
     has[name] = !notYet.has(name) && api.has(name);
   }
@@ -449,6 +456,9 @@ export function createFrameDispatcher(
   const { api, emit, report } = options;
   let disposed = false;
   const handles = new Map<number, HandleEntry>();
+  // Emitidos por ESTE despachador, nunca por el mensaje: solo alcanzan montajes propios.
+  const tabMounts = new Map<number, PluginTabViewContext>();
+  let nextTabMount = 1;
   const subscriptions = new Map<PluginFrameSubscribableTopic, PluginUnregister>();
   const undos = new Map<number, () => void>();
   let nextUndo = 1;
@@ -613,26 +623,26 @@ export function createFrameDispatcher(
     el: HTMLElement,
     ref: PluginCallbackRef,
     spec: PluginSurfaceSpec,
-    extra: { section?: string; code?: PluginSurfaceCodeBlock } = {}
+    extra: Pick<Extract<PluginSurfaceCall, { op: 'mount' }>, 'section' | 'code' | 'tab'> = {},
+    propagateFault = false
   ) => {
     const surface = services('superficie').createSurface(el, spec);
     let surfaceId: string | null = null;
     let gone = false;
     const call = (value: PluginSurfaceCall, expectResult: boolean): Promise<unknown> =>
       options.invoke(ref, [value], expectResult);
-    surface.ready.then(
-      (ticket) => {
-        if (gone || disposed) return;
-        surfaceId = ticket.surfaceId;
-        call({ op: 'mount', ticket, ...extra }, true).catch((error: unknown) => {
-          if (!gone && !disposed) report(`montar «${spec.title.slice(0, 60)}»`, error);
-        });
-      },
-      (error: unknown) => {
-        if (!gone && !disposed) report(`superficie «${spec.title.slice(0, 60)}»`, error);
-      }
-    );
+    const ready = surface.ready.then(async (ticket) => {
+      if (gone || disposed) return;
+      surfaceId = ticket.surfaceId;
+      await call({ op: 'mount', ticket, ...extra }, true);
+    });
+    // Las pestañas tienen estado de error y Reintentar: lo observa el registro de módulos.
+    if (!propagateFault)
+      void ready.catch((error: unknown) => {
+        if (!gone && !disposed) report(`montar «${spec.title.slice(0, 60)}»`, error);
+      });
     return {
+      ready,
       visible(visible: boolean): void {
         if (surfaceId === null || gone) return;
         call({ op: 'visible', surfaceId, visible }, false).catch(() => {});
@@ -714,6 +724,83 @@ export function createFrameDispatcher(
       const title = text(view.title, 'El título de la vista');
       const icon = text(view.icon, 'El icono de la vista');
       const ref = callbackRef(view.surface, 'surface');
+      if (view.placement === 'home') {
+        if (!options.ui?.registerHomeView)
+          throw frameApiError('capability-not-available', 'Este Hebra no ofrece vistas de Inicio.');
+        const mounted = new Set<() => void>();
+        const unregister = options.ui.registerHomeView({
+          id,
+          title,
+          icon,
+          placement: 'home',
+          mount(el) {
+            const surface = surfaceInto(el, ref, { kind: 'view', title, fit: 'fill' }, {}, true);
+            const unmount = (): void => {
+              mounted.delete(unmount);
+              surface.unmount();
+            };
+            mounted.add(unmount);
+            return {
+              unmount,
+              ready: surface.ready.catch((error: unknown) => {
+                unmount();
+                throw error;
+              })
+            };
+          }
+        });
+        return keep(handle, {
+          release() {
+            for (const unmount of mounted) unmount();
+            unregister();
+          }
+        });
+      }
+      if (view.placement === 'tab') {
+        const mounted = new Map<number, () => void>();
+        const unregister = ui.registerView({
+          id,
+          title,
+          icon,
+          placement: 'tab',
+          mount(el, ctx) {
+            const mountId = nextTabMount++;
+            tabMounts.set(mountId, ctx);
+            let surface: ReturnType<typeof surfaceInto>;
+            try {
+              surface = surfaceInto(
+                el,
+                ref,
+                { kind: 'tab', title, fit: 'fill' },
+                { tab: { mountId, key: ctx.key, state: ctx.state } },
+                true
+              );
+            } catch (error) {
+              tabMounts.delete(mountId);
+              throw error;
+            }
+            const unmount = (): void => {
+              tabMounts.delete(mountId);
+              mounted.delete(mountId);
+              surface.unmount();
+            };
+            mounted.set(mountId, unmount);
+            return {
+              unmount,
+              ready: surface.ready.catch((error: unknown) => {
+                unmount();
+                throw error;
+              })
+            };
+          }
+        });
+        return keep(handle, {
+          release() {
+            for (const unmount of mounted.values()) unmount();
+            unregister();
+          }
+        });
+      }
       if (view.placement === 'main') {
         const unregister = ui.registerView({
           id,
@@ -1076,6 +1163,20 @@ export function createFrameDispatcher(
       return vault.blobPut(bytes, putOptions);
     },
 
+    'ui.tabView.setState': (mountId, state) => {
+      // Una llamada ya en vuelo al desmontar no hace nada; el contexto valida el JSON.
+      tabMounts.get(mountId)?.setState(state);
+      return null;
+    },
+    'ui.tabView.setTitle': (mountId, title) => {
+      tabMounts.get(mountId)?.setTitle(title);
+      return null;
+    },
+    'workspace.openView': (id, openOptions) => {
+      workspace.openView(id, openOptions);
+      recheckActive();
+      return null;
+    },
     'workspace.openNote': (id, openOptions) => {
       workspace.openNote(id, openOptions);
       // Ir a otra nota a propósito suelta la fijada (T10): la instantánea lo refleja.
@@ -1179,6 +1280,7 @@ export function createFrameDispatcher(
       };
       for (const entry of [...handles.values()]) release(() => entry.release(), 'al apagar');
       handles.clear();
+      tabMounts.clear();
       for (const off of [...subscriptions.values()]) release(off, 'al apagar');
       subscriptions.clear();
       for (const off of offs.splice(0)) release(off, 'al apagar');

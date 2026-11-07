@@ -40,7 +40,6 @@ import type {
   PluginCleanup,
   PluginCommandDefinition,
   PluginDeviceStorage as PluginDeviceStorageV1,
-  PluginHostFeature,
   PluginKeepScreenOnResult,
   PluginMainViewDefinition,
   PluginMenuEntry,
@@ -87,13 +86,14 @@ export type {
   PluginFolderRenameEvent,
   PluginFolderRenameGuard,
   PluginFrontmatterRange,
-  PluginHostFeature,
   PluginHttp,
   PluginHttpRequest,
   PluginHttpResponse,
   PluginJsonValue,
   PluginMainViewDefinition,
   PluginMarkdown,
+  PluginMarkdownLink,
+  PluginMarkdownLinkTarget,
   PluginMenuEntry,
   PluginMenuItem,
   PluginMenuSeparator,
@@ -148,7 +148,21 @@ export type {
 export type PluginApiVersion = `2.${number}.${number}`;
 
 /** La versión de la API que describe esta entrada (la de Hebra: `HEBRA_PLUGIN_API_VERSION_V2`). */
-export const PLUGIN_API_VERSION = '2.2.0';
+export const PLUGIN_API_VERSION = '2.4.0';
+
+/** Funciones del anfitrión; Inicio es optativa y nunca un permiso del manifiesto. */
+export type PluginHostFeature = import('./_v1/index').PluginHostFeature | 'ui.view.home';
+
+/** Vista de Inicio (2.3): un montaje por proveedor y dashboard, en su origen aislado.
+ * El contenido debe admitir anchos estrechos. La limpieza es síncrona y obligatoria
+ * cuando se retira el bloque, cambia el dashboard o se desactiva el plugin. */
+export interface PluginHomeViewDefinition {
+  readonly id: string;
+  readonly title: string;
+  readonly icon: string;
+  readonly placement: 'home';
+  mount(el: HTMLElement): void | (() => void) | { unmount?(): void };
+}
 
 // ---- Capacidades (§5.3 de la spec; §5.5 para lo nuevo) ----
 
@@ -304,7 +318,11 @@ export interface PluginMenuPosition {
  */
 export interface PluginUi {
   registerView(
-    view: PluginViewDefinition | PluginMainViewDefinition | PluginTabViewDefinition
+    view:
+      | PluginViewDefinition
+      | PluginMainViewDefinition
+      | PluginTabViewDefinition
+      | PluginHomeViewDefinition
   ): PluginUnregister;
   revealView(id: string, options?: PluginRevealViewOptions): void;
   updateView(id: string, patch: PluginViewPatch): void;

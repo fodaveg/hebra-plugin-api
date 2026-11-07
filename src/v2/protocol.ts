@@ -32,10 +32,10 @@
  */
 import type {
   PluginActiveNote,
+  PluginOpenViewOptions,
   PluginCommandDefinition,
   PluginFolder,
   PluginFolderRenameEvent,
-  PluginHostFeature,
   PluginHttp,
   PluginJsonValue,
   PluginMenuEntry,
@@ -55,6 +55,7 @@ import type {
   PluginBackground
 } from './_v1/index';
 import type {
+  PluginHostFeature,
   PluginApiErrorShape,
   PluginCapability,
   PluginCompletionProvider,
@@ -230,10 +231,9 @@ export type PluginFrameSubscribableTopic = (typeof PLUGIN_FRAME_SUBSCRIBABLE_TOP
 /**
  * Capacidades y funciones del anfitrión que el marco todavía NO da. `has()` las da por `false`
  * aunque estén declaradas, para no prometer lo que el marco no sirve. L5 quitó `notify.sound` y
- * `ui.view.main` (vistas `main`, sonido) y L6 quitó `editor`. Solo queda `ui.view.tab`: las vistas
- * de pestaña no entraron en L5.
+ * `ui.view.main` (vistas `main`, sonido) y L6 quitó `editor`. Las vistas de pestaña ya usan superficies y contexto por puerto.
  */
-export const PLUGIN_FRAME_NOT_YET_SERVED = ['ui.view.tab'] as const satisfies readonly (
+export const PLUGIN_FRAME_NOT_YET_SERVED = [] as const satisfies readonly (
   PluginCapability | PluginHostFeature
 )[];
 
@@ -272,6 +272,11 @@ export type PluginSurfaceCall =
       readonly ticket: PluginSurfaceTicket;
       readonly section?: string;
       readonly code?: PluginSurfaceCodeBlock;
+      readonly tab?: {
+        readonly mountId: number;
+        readonly key: string;
+        readonly state: PluginJsonValue | null;
+      };
     }
   | { readonly op: 'visible'; readonly surfaceId: string; readonly visible: boolean }
   | { readonly op: 'unmount'; readonly surfaceId: string };
@@ -281,7 +286,7 @@ export interface PluginFrameViewWire {
   readonly id: string;
   readonly title: string;
   readonly icon: string;
-  readonly placement?: 'column' | 'dialog' | 'main';
+  readonly placement?: 'column' | 'dialog' | 'main' | 'tab' | 'home';
   readonly sections?: readonly PluginViewSection[];
   readonly retainSections?: boolean;
   readonly surface: PluginCallbackRef;
@@ -324,6 +329,8 @@ export type PluginHostToSurface =
       readonly theme: string;
     }
   | { readonly type: 'focus' }
+  /** Acusa el fin del gesto actual; nunca concede foco. */
+  | { readonly type: 'settle-pointer'; readonly id: number }
   | { readonly type: 'dispose' };
 
 export interface PluginSurfaceKey {
@@ -338,6 +345,7 @@ export interface PluginSurfaceKey {
 
 export type PluginSurfaceToHost =
   | { readonly type: 'ready' }
+  | { readonly type: 'pointer-settled'; readonly id: number }
   | { readonly type: 'size'; readonly height: number }
   | { readonly type: 'key'; readonly key: PluginSurfaceKey };
 
@@ -465,6 +473,19 @@ export interface PluginFrameRpc {
   readonly 'vault.blobRead': Rpc<PluginVault['blobRead']>;
   readonly 'vault.blobPut': Rpc<PluginVault['blobPut']>;
 
+  readonly 'ui.tabView.setState': {
+    args: readonly [mountId: number, state: PluginJsonValue | null];
+    result: null;
+  };
+  readonly 'ui.tabView.setTitle': {
+    args: readonly [mountId: number, title: string | null];
+    result: null;
+  };
+  // Estado JSON recursivo ya serializable: no aplicar PluginWire recursivamente.
+  readonly 'workspace.openView': {
+    readonly args: readonly [viewId: string, options?: PluginOpenViewOptions];
+    readonly result: null;
+  };
   readonly 'workspace.openNote': Fire<PluginWorkspace['openNote']>;
   readonly 'workspace.selectFolder': Fire<PluginWorkspace['selectFolder']>;
   readonly 'workspace.openSearch': Fire<PluginWorkspace['openSearch']>;

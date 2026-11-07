@@ -657,6 +657,12 @@ export interface PluginNoteListItem {
   updatedAt: number;
   favorite: boolean;
   locked: boolean;
+  /**
+   * Desde la 2.4. El id de la nota original si esta es una COPIA de conflicto (la que Hebra
+   * guarda cuando una escritura llega con una revisión vieja), `null` en una nota normal.
+   * Es la misma marca que usa la app; sale de la fila, sin leer cuerpos.
+   */
+  conflictOf: string | null;
 }
 
 export interface PluginNotesPage {
@@ -683,9 +689,15 @@ export interface PluginNoteSummary extends PluginNoteListItem {
   bodySha256: string;
 }
 
-/** Ámbito de `notesPage`: toda la biblioteca o una carpeta. */
+/**
+ * Ámbito de `notesPage`: toda la biblioteca, una carpeta o (desde la 2.4) el archivo.
+ * `all` y `folder` excluyen las notas archivadas y las de la papelera; `archive` lista solo
+ * las archivadas que no están en la papelera.
+ */
 export type PluginNotesScope =
-  { kind: 'all' } | { kind: 'folder'; folderId: string; subfolders?: boolean };
+  | { kind: 'all' }
+  | { kind: 'folder'; folderId: string; subfolders?: boolean }
+  | { kind: 'archive' };
 
 export type PluginNoteSaveResult =
   | { outcome: 'saved'; id: string; revision: PluginNoteRevision }
@@ -952,6 +964,62 @@ export interface PluginFrontmatterRange {
   end: number;
 }
 
+/**
+ * Qué es el destino de un enlace de `markdown.links` (desde la 2.4), tal como lo lee Hebra:
+ * - `note-title`: una nota por título (`[[Nota]]`, también `[[Nota.md]]`).
+ * - `note-path`: una nota con carpeta (`[[Carpeta/Nota]]`).
+ * - `note-id`: una nota por id (`[[id:...]]`).
+ * - `file`: un fichero o adjunto por nombre (`[[plano.pdf]]`, `![[foto.png]]`).
+ * - `hash`: un adjunto por hash (`sha256:...`).
+ * - `lumbre`: una tarea o lista de Lumbre (`[[task:...]]`, `[[list:...]]`).
+ * - `self-heading`: un encabezado o bloque de la propia nota (`[[#Encabezado]]`).
+ * - `template`: un marcador de plantilla (`[[{{today}}]]`); se reconoce por su forma
+ *   `{{...}}`, porque Hebra no lo trata aparte al derivar.
+ * - `empty`: sin destino que resolver (`[[]]`, un `sha256:` mal formado).
+ * Un plugin que juzga enlaces rotos solo debe mirar `note-title`, `note-path`, `note-id`,
+ * `file` y `hash`.
+ */
+export type PluginMarkdownLinkTarget =
+  | 'note-title'
+  | 'note-path'
+  | 'note-id'
+  | 'file'
+  | 'hash'
+  | 'lumbre'
+  | 'self-heading'
+  | 'template'
+  | 'empty';
+
+/** Un enlace que Hebra deriva de un cuerpo (`markdown.links`, desde la 2.4). */
+export interface PluginMarkdownLink {
+  /** `wikilink` = `[[...]]`; `embed` = `![[...]]`; `image` = `![alt](destino relativo)`. */
+  kind: 'wikilink' | 'embed' | 'image';
+  /** Posiciones UTF-16 del enlace entero en el cuerpo: `body.slice(from, to)`. */
+  from: number;
+  to: number;
+  /** Posiciones del destino crudo (sin alias ni encabezado): reescribir solo esto cambia
+   *  el destino y conserva el resto del enlace. */
+  targetFrom: number;
+  targetTo: number;
+  /** `body.slice(targetFrom, targetTo)`, tal cual está escrito. */
+  rawTarget: string;
+  /** El destino ya limpio como lo analiza Hebra (`target` de su `parseLinkRef`: título en
+   *  forma canónica, id, nombre de fichero o hash), o `null` si no apunta a nada fuera de
+   *  la nota (`self-heading`, `lumbre`, `empty`, `template`). */
+  target: string | null;
+  /** La carpeta del destino, en minúsculas y con `/` (`[[Archivo/Notas/X]]` da
+   *  `'archivo/notas'`), o `null`. */
+  targetPath: string | null;
+  /** El texto tras `|` (en una imagen, su texto alternativo), o `null`. */
+  alias: string | null;
+  /** El encabezado tras `#` (`[[Nota#Sección]]`), o `null`. */
+  heading: string | null;
+  /** El bloque tras `#^` (`[[Nota#^abc]]`), o `null`. */
+  blockId: string | null;
+  /** La clase del destino. */
+  targetKind: PluginMarkdownLinkTarget;
+}
+
 export interface PluginMarkdown {
   /** El cuerpo con la propiedad raíz `key` escrita (o quitada con `null`). Si el
    *  frontmatter no se puede parchear sin riesgo, devuelve el cuerpo tal cual. */
@@ -969,6 +1037,14 @@ export interface PluginMarkdown {
   /** Dónde está el frontmatter del principio del cuerpo (`---` en la primera línea hasta
    *  el `---` o `...` de cierre), o `null` si no empieza por uno o no se cierra. */
   frontmatterRange(body: string): PluginFrontmatterRange | null;
+  /**
+   * Desde la 2.4. Los enlaces que Hebra deriva de `body`, en orden de aparición y SIN
+   * quitar repetidos (para poder reescribir cada uno). Es el mismo código de la app, así que
+   * no salen los que están en bloques o código en línea, en el frontmatter, en una etiqueta
+   * HTML ni en un comentario `%%...%%` (salvo un adjunto por hash, que Hebra cuenta siempre),
+   * y `[texto](Nota.md)` no es un enlace. Una imagen `![alt](ruta)` con destino relativo sí.
+   */
+  links(body: string): PluginMarkdownLink[];
 }
 
 // ---- storage (siempre, §5.2 y §9) ----
