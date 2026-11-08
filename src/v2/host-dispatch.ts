@@ -1130,6 +1130,10 @@ export function createFrameDispatcher(
     'vault.notesPage': (cursor, limit, scope) => vault.notesPage(cursor, limit, scope),
     'vault.noteRead': (id) => vault.noteRead(id),
     'vault.noteSummary': (ids) => vault.noteSummary(ids),
+    'vault.notesReadBatch': (ids) =>
+      vault.notesReadBatch
+        ? vault.notesReadBatch(ids)
+        : Promise.reject(new Error('vault.notesReadBatch: este host no lo implementa (falta la capacidad «vault.read.batch»)')),
     'vault.noteCreate': (input) => vault.noteCreate(input),
     'vault.noteSave': (input) => vault.noteSave(input),
     'vault.notesRewriteBatch': (entries, batchOptions) =>

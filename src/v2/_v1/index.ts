@@ -812,6 +812,17 @@ export interface PluginVault {
   ): Promise<PluginNotesPage>;
   noteRead(id: string): Promise<PluginNote | null>;
   noteSummary(ids: readonly string[]): Promise<PluginNoteSummary[]>;
+  /**
+   * Lectura de VARIAS notas en UNA operación de la cola del almacén (capacidad
+   * `vault.read.batch`: declárala en `hebra.json` y comprueba antes
+   * `api.has('vault.read.batch')`). Con `noteRead` cada id es una operación aparte y una
+   * ráfaga de lecturas se espera entre sí en la cola; aquí un lote entero es una sola
+   * operación. Devuelve un elemento POR id, en el mismo orden que `ids`; `null` cuando la
+   * nota no existe (igual que `noteRead`). Tope del host: 200 ids por llamada (como
+   * `noteSummary`); más ids significan varias llamadas. Es OPCIONAL: un host sin la capacidad
+   * no lo tiene y `api.has('vault.read.batch')` da `false`.
+   */
+  notesReadBatch?(ids: readonly string[]): Promise<readonly (PluginNote | null)[]>;
   noteCreate(input: { folderId: string | null; body: string }): Promise<PluginNote>;
   noteSave(input: {
     id: string;

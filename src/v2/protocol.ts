@@ -449,6 +449,7 @@ export interface PluginFrameRpc {
   readonly 'vault.notesPage': Rpc<PluginVault['notesPage']>;
   readonly 'vault.noteRead': Rpc<PluginVault['noteRead']>;
   readonly 'vault.noteSummary': Rpc<PluginVault['noteSummary']>;
+  readonly 'vault.notesReadBatch': Rpc<NonNullable<PluginVault['notesReadBatch']>>;
   readonly 'vault.noteCreate': Rpc<PluginVault['noteCreate']>;
   readonly 'vault.noteSave': Rpc<PluginVault['noteSave']>;
   readonly 'vault.notesRewriteBatch': Rpc<PluginVault['notesRewriteBatch']>;

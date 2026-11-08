@@ -1279,6 +1279,17 @@ export function createFakePluginApi(options: FakePluginApiOptions = {}): FakePlu
           ];
         });
       },
+      async notesReadBatch(ids) {
+        requireCapability('vault.read');
+        if (!declared.has('vault.read.batch' as PluginCapability)) {
+          throw new FakePluginApiError('capability-not-declared', '«vault.read.batch» sin declarar.');
+        }
+        // Como Hebra: un elemento por id, en el mismo orden; null si no existe.
+        return ids.map((id) => {
+          const note = notes.get(id);
+          return note ? { ...note, revision: { ...note.revision } } : null;
+        });
+      },
       async noteCreate({ folderId, body }) {
         requireCapability('vault.write');
         created += 1;

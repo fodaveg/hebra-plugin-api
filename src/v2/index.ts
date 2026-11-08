@@ -172,7 +172,7 @@ export interface PluginHomeViewDefinition {
  * en `hebra.json` y sale en la hoja de consentimiento (el texto lo decide David, P10).
  * `editor` sigue existiendo, pero ya no presta CodeMirror: da el editor declarativo.
  */
-export type PluginCapability = PluginCapabilityV1 | 'notify.sound';
+export type PluginCapability = PluginCapabilityV1 | 'notify.sound' | 'vault.read.batch';
 
 // ---- Errores ----
 

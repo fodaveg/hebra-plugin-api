@@ -1193,6 +1193,7 @@ export function createFrameApi(options: CreateFrameApiOptions): HebraPluginApi {
     notesPage: (cursor, limit, scope) => client.rpc('vault.notesPage', [cursor, limit, scope]),
     noteRead: (id) => client.rpc('vault.noteRead', [id]),
     noteSummary: (ids) => client.rpc('vault.noteSummary', [ids]),
+    notesReadBatch: (ids) => client.rpc('vault.notesReadBatch', [ids]),
     noteCreate: (input) => client.rpc('vault.noteCreate', [input]),
     noteSave: (input) => client.rpc('vault.noteSave', [input]),
     notesRewriteBatch: (entries, batchOptions) =>
