@@ -1,6 +1,6 @@
 # hebra-plugin-api
 
-API pública de los plugins de Hebra. El paquete es la versión `2.4.0` (sin publicar: la etiqueta la decide David; la 2.4.0 añade el ámbito `archive` en `vault.notesPage`, `conflictOf` en listado y resumen de notas, `markdown.links` y la lectura por lotes `vault.notesReadBatch` con la capacidad `vault.read.batch`; la 2.3.0 añadió vistas optativas de Inicio; la 2.2.0 añadió `ui.keepScreenOn` y la capacidad `screen.awake` a la 2.x; la 2.1.0 añadió `clickModifier` a las decoraciones) y lleva DOS APIs: la 2.x en `hebra-plugin-api/v2`, la única que Hebra ejecuta, y los tipos de la 1.x (`1.8.0`) en la raíz, que ya no se cargan (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
+API pública de los plugins de Hebra. El paquete es la versión `2.5.0` (sin publicar: la etiqueta la decide David; la 2.5.0 añade la lectura por lotes `vault.notesReadBatch` con la capacidad `vault.read.batch`, que se declara pero no sale en la hoja de permisos porque no lee nada que `vault.read` no deje leer; la 2.4.0 añadió el ámbito `archive` en `vault.notesPage`, `conflictOf` en listado y resumen de notas y `markdown.links`; la 2.3.0 añadió vistas optativas de Inicio; la 2.2.0 añadió `ui.keepScreenOn` y la capacidad `screen.awake` a la 2.x; la 2.1.0 añadió `clickModifier` a las decoraciones) y lleva DOS APIs: la 2.x en `hebra-plugin-api/v2`, la única que Hebra ejecuta, y los tipos de la 1.x (`1.8.0`) en la raíz, que ya no se cargan (`docs/SPEC-PLUGINS-EXTERNOS.md` §5 y §6 del repo de Hebra).
 
 Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de los tipos: la fachada de Hebra (`src/lib/plugins/api/create-plugin-api.ts`) se compila contra ellos. Se publica copiándolo al repo público `fodaveg/hebra-plugin-api`, con una etiqueta `vX.Y.Z` por versión de API (§5.4), con `node scripts/plugin-api-publish.mjs --out <dir>` desde el repo de Hebra. Ese script falla si la 1.x de Hebra no es la de los tipos, si la 2.0 de Hebra no es la de `v2`, o si la versión de `package.json` no es la de la 2.0 (la mayor de las dos; la etiqueta es `v2.0.0`), y añade `dist/` (el mismo código en JavaScript) para que Node pueda importar `hebra-plugin-api/build` desde el script de build de un plugin: Node no quita tipos de un `.ts` dentro de `node_modules`. Un plugin lo instala como dependencia de desarrollo: `npm install -D github:fodaveg/hebra-plugin-api#v1.2.0` (1.x) o `#v2.0.0` (1.x y 2.0).
 
@@ -12,7 +12,7 @@ Este paquete vive en el repo de Hebra (`packages/plugin-api/`) y es la fuente de
 | `hebra-plugin-api/shared`     | La lista de módulos que presta Hebra (`@codemirror/state`, `@codemirror/view`, `@codemirror/language`, `@lezer/common`, `@lezer/highlight`) y la clave de su registro global. |
 | `hebra-plugin-api/build`      | `hebraShared()` para esbuild y `hebraSharedRollup()` para Rollup, Rolldown y Vite: cada import de un módulo prestado lee el de Hebra en vez de empaquetar otra copia.         |
 | `hebra-plugin-api/testing`    | `createFakePluginApi(options)`: una API en memoria para probar un plugin sin Hebra.                                                                                           |
-| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.4.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
+| `hebra-plugin-api/v2`         | La API 2.0 (plugin aislado en un marco): tipos, `PLUGIN_API_VERSION` (`2.5.0`), `PLUGIN_API_ERROR_CODES` e `isPluginApiError`. No exige `@codemirror/state`.                  |
 | `hebra-plugin-api/v2/testing` | `createFakePluginApiV2(options)`: el host falso de la 2.0.                                                                                                                    |
 
 Los tipos son TypeScript sin compilar (`src/`); el código que importa Node o empaqueta esbuild sale de `dist/` en el paquete publicado.
@@ -299,6 +299,12 @@ Solo se añade; un plugin con `"apiVersion": "^2.3.0"` sigue cargando en un Hebr
 - `vault.notesPage(cursor, limit, { kind: 'archive' })`: las notas archivadas que no están en la papelera, en páginas de hasta 200. `all` y `folder` siguen sin traer ni archivadas ni papelera.
 - `conflictOf: string | null` en `PluginNoteListItem` (y, por herencia, en `PluginNoteSummary`): el id de la nota original si es una copia de conflicto, `null` si no.
 - `markdown.links(body)`: los enlaces que Hebra deriva del cuerpo (`wikilink`, `embed` e `image`), con `from`/`to`, el destino crudo y su rango (`targetFrom`/`targetTo`, para reescribir solo el destino), el destino limpio (`target`, `targetPath`), `alias`, `heading`, `blockId` y la clase del destino (`targetKind`: `note-title`, `note-path`, `note-id`, `file`, `hash`, `lumbre`, `self-heading`, `template`, `empty`). Es el mismo código de la app: no salen los enlaces dentro de código, frontmatter, HTML ni comentarios `%%…%%` (salvo un adjunto por hash), y `[texto](Nota.md)` no cuenta. No quita repetidos. El host falso lo aproxima sin el lector de Markdown de Hebra.
+
+## Novedades de la 2.5: lectura por lotes
+
+Solo se añade; un plugin con `"apiVersion": "^2.4.0"` sigue cargando en un Hebra 2.5.
+
+- `vault.notesReadBatch(ids)` (opcional, capacidad `vault.read.batch`): varias notas en UNA operación de la cola del almacén de Hebra, en vez de una por `noteRead`. Devuelve un elemento por id, en el mismo orden, con `null` donde la nota no existe (como `noteRead`; una protegida llega con `locked: true` y `body: null`). Como mucho 200 ids por llamada: con más rechaza con `invalid-argument`, no trunca. Declara `vault.read.batch` junto a `vault.read` (mejor en `capabilities.optional`) y pregunta `api.has('vault.read.batch')`: da `false` en un Hebra anterior, sin `vault.read` o sin la capacidad declarada, y entonces el método no está o rechaza; sigue con `noteRead`. No sale en la hoja de permisos: no lee nada que `vault.read` no deje leer.
 
 ## Host falso
 

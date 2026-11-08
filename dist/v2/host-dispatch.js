@@ -165,12 +165,26 @@ export function frameBootSnapshot(input) {
     }
     has['notify.sound'] =
         !notYet.has('notify.sound') && input.capabilityError('notify.sound') === null;
+    // `vault.read.batch` (2.5): además de lo que diga la fachada (declarada, con `vault.read`),
+    // el anfitrión tiene que servir la lectura por lotes: sin `notesReadBatch` en su `vault`,
+    // `false` y `capability-not-available`, para que el plugin siga con `noteRead`.
+    const readBatchError = input.capabilityError('vault.read.batch') ??
+        (typeof api.vault.notesReadBatch === 'function'
+            ? null
+            : {
+                name: 'PluginApiError',
+                code: 'capability-not-available',
+                message: 'Esta versión de Hebra no lee notas por lotes («vault.read.batch»).'
+            });
+    has['vault.read.batch'] = readBatchError === null;
     const capabilityErrors = {};
     for (const name of [...PLUGIN_CAPABILITIES, 'notify.sound']) {
         const error = input.capabilityError(name);
         if (error)
             capabilityErrors[name] = error;
     }
+    if (readBatchError)
+        capabilityErrors['vault.read.batch'] = readBatchError;
     const readable = has['vault.read'] === true;
     return {
         apiVersion: input.apiVersion,
@@ -396,6 +410,10 @@ export function createFrameDispatcher(options) {
                 return;
             surfaceId = ticket.surfaceId;
             await call({ op: 'mount', ticket, ...extra }, true);
+            // El `el.focus()` que el plugin haga al montar no llega a un marco de otro origen sin el
+            // foco: el inicial de un modal lo da Hebra, ya con sus controles montados.
+            if (spec.kind === 'modal' && !gone && !disposed)
+                surface.focusInitial?.();
         });
         // Las pestañas tienen estado de error y Reintentar: lo observa el registro de módulos.
         if (!propagateFault)
@@ -861,6 +879,9 @@ export function createFrameDispatcher(options) {
         'vault.notesPage': (cursor, limit, scope) => vault.notesPage(cursor, limit, scope),
         'vault.noteRead': (id) => vault.noteRead(id),
         'vault.noteSummary': (ids) => vault.noteSummary(ids),
+        'vault.notesReadBatch': (ids) => vault.notesReadBatch
+            ? vault.notesReadBatch(ids)
+            : Promise.reject(new Error('vault.notesReadBatch: este host no lo implementa (falta la capacidad «vault.read.batch»)')),
         'vault.noteCreate': (input) => vault.noteCreate(input),
         'vault.noteSave': (input) => vault.noteSave(input),
         'vault.notesRewriteBatch': (entries, batchOptions) => vault.notesRewriteBatch(entries, batchOptions),

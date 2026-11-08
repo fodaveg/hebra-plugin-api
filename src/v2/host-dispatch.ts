@@ -222,6 +222,11 @@ export interface PluginHostSurface {
   readonly ready: Promise<PluginSurfaceTicket>;
   /** Quita el marco de la superficie y su puerto. */
   destroy(): void;
+  /**
+   * Foco inicial de un modal, ya montado lo del plugin: si el foco de Hebra sigue dentro de su
+   * diálogo, Hebra lo pasa al marco y a su primer control.
+   */
+  focusInitial?(): void;
 }
 
 /**
@@ -358,11 +363,25 @@ export function frameBootSnapshot(input: PluginFrameSnapshotInput): PluginBootSn
   }
   has['notify.sound'] =
     !notYet.has('notify.sound') && input.capabilityError('notify.sound') === null;
+  // `vault.read.batch` (2.5): además de lo que diga la fachada (declarada, con `vault.read`),
+  // el anfitrión tiene que servir la lectura por lotes: sin `notesReadBatch` en su `vault`,
+  // `false` y `capability-not-available`, para que el plugin siga con `noteRead`.
+  const readBatchError: PluginApiErrorShape | null =
+    input.capabilityError('vault.read.batch') ??
+    (typeof api.vault.notesReadBatch === 'function'
+      ? null
+      : {
+          name: 'PluginApiError',
+          code: 'capability-not-available',
+          message: 'Esta versión de Hebra no lee notas por lotes («vault.read.batch»).'
+        });
+  has['vault.read.batch'] = readBatchError === null;
   const capabilityErrors: Partial<Record<PluginCapability, PluginApiErrorShape>> = {};
   for (const name of [...PLUGIN_CAPABILITIES, 'notify.sound' as const]) {
     const error = input.capabilityError(name);
     if (error) capabilityErrors[name] = error;
   }
+  if (readBatchError) capabilityErrors['vault.read.batch'] = readBatchError;
   const readable = has['vault.read'] === true;
   return {
     apiVersion: input.apiVersion,
@@ -635,6 +654,9 @@ export function createFrameDispatcher(
       if (gone || disposed) return;
       surfaceId = ticket.surfaceId;
       await call({ op: 'mount', ticket, ...extra }, true);
+      // El `el.focus()` que el plugin haga al montar no llega a un marco de otro origen sin el
+      // foco: el inicial de un modal lo da Hebra, ya con sus controles montados.
+      if (spec.kind === 'modal' && !gone && !disposed) surface.focusInitial?.();
     });
     // Las pestañas tienen estado de error y Reintentar: lo observa el registro de módulos.
     if (!propagateFault)
@@ -1133,7 +1155,11 @@ export function createFrameDispatcher(
     'vault.notesReadBatch': (ids) =>
       vault.notesReadBatch
         ? vault.notesReadBatch(ids)
-        : Promise.reject(new Error('vault.notesReadBatch: este host no lo implementa (falta la capacidad «vault.read.batch»)')),
+        : Promise.reject(
+            new Error(
+              'vault.notesReadBatch: este host no lo implementa (falta la capacidad «vault.read.batch»)'
+            )
+          ),
     'vault.noteCreate': (input) => vault.noteCreate(input),
     'vault.noteSave': (input) => vault.noteSave(input),
     'vault.notesRewriteBatch': (entries, batchOptions) =>

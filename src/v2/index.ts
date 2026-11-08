@@ -148,7 +148,7 @@ export type {
 export type PluginApiVersion = `2.${number}.${number}`;
 
 /** La versión de la API que describe esta entrada (la de Hebra: `HEBRA_PLUGIN_API_VERSION_V2`). */
-export const PLUGIN_API_VERSION = '2.4.0';
+export const PLUGIN_API_VERSION = '2.5.0';
 
 /** Funciones del anfitrión; Inicio es optativa y nunca un permiso del manifiesto. */
 export type PluginHostFeature = import('./_v1/index').PluginHostFeature | 'ui.view.home';
